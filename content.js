@@ -3,17 +3,18 @@
  *
  * 核心检测引擎：通过 MutationObserver + 防抖策略检测 AI 回复完成。
  *
- * v1.1.4 关键修复（根据用户进一步反馈）：
- *  15. 完全放弃"仅后台通知"语义 —— 改为"只要标签页失去焦点就通知"。
- *      之前用 document.visibilityState==='hidden' 判断，标签页可见但无焦点时不发。
- *      现在改为 !document.hasFocus()，只要用户切走就发，更符合用户预期。
- *  16. manifest matches 改为 <all_urls>，content.js 在所有网站加载，
- *      但只在匹配的站点上启动监控。解决"manifest matches 未匹配实际 URL"
- *      导致 content script 完全不注入的问题。
- *  17. 启动时立即输出一条醒目的日志（不受 DEBUG 控制），
- *      方便确认 content script 是否注入。
- *  18. 未知站点提前退出时也输出一条警告，便于诊断。
+ * v1.1.5 修复重复通知：
+ *  19. 之前用 (fingerprint && text) 双重判定"同一条消息"，
+ *      但 Svelte/React 应用在流式结束后会重新渲染 UI（代码高亮、
+ *      Markdown 解析、按钮出现等），导致 textContent 产生细微变化
+ *      （空格/换行/字符规范化），触发重复通知。
+ *  20. 新增 notifiedFingerprints Set，按指纹去重：
+ *      一条 AI 消息只要指纹不变，无论文本是否细微变化，只通知一次。
+ *      Set 大小限制为 50，避免内存泄漏。
+ *  21. 指纹优先级调整：id > data-id > 文本前 200 字（之前 100 字太短，
+ *      长回复前 100 字可能相同）。
  *
+ * v1.1.4 content script 注入修复 + 失焦即通知。
  * v1.1.3 完全放弃流式指示器检测，纯文本驱动。
  * v1.1.2 删除 [class*="cursor"] 选择器。
  * v1.1.1 回退策略 + 诊断快捷键。
@@ -373,11 +374,14 @@
 
   function getElementFingerprint(el) {
     if (!el) return '';
+    // ✨ v1.1.5: 优先使用稳定的 id/data-id，避免 UI 重渲染导致指纹变化
     if (el.id) return 'id:' + el.id;
-    const dataId = el.getAttribute('data-id') || el.getAttribute('data-message-id');
+    const dataId = el.getAttribute('data-id') || el.getAttribute('data-message-id')
+      || el.getAttribute('data-turn-id') || el.getAttribute('data-response-id');
     if (dataId) return 'data:' + dataId;
+    // ✨ v1.1.5: 文本指纹从 100 字增加到 200 字，避免长回复前缀相同
     const text = getCleanText(el);
-    return 'text:' + text.substring(0, 100);
+    return 'text:' + text.substring(0, 200);
   }
 
   /**
@@ -423,6 +427,10 @@
       this.initCalled = false;
       this.debounceTime = 1500;
       this.onlyWhenHidden = true; // ✨ v1.1.4: 语义改为"未聚焦时不发，失去焦点时发"
+      // ✨ v1.1.5: 已通知过的消息指纹集合，用于去重
+      // 防止 Svelte/React UI 重渲染导致 textContent 细微变化触发重复通知
+      this.notifiedFingerprints = new Set();
+      this.maxNotifiedFingerprints = 50; // 限制大小避免内存泄漏
       this.diagnosticInfo = {
         initTime: Date.now(),
         mutationsReceived: 0,
@@ -435,6 +443,26 @@
         lastPollTime: null,
         lastMutationTime: null,
       };
+    }
+
+    /**
+     * ✨ v1.1.5: 记录已通知的指纹，自动控制 Set 大小
+     */
+    markNotified(fingerprint) {
+      if (!fingerprint) return;
+      // 超过上限时清空集合（保留最近的通知记录）
+      // 这种简单策略足以避免内存泄漏，且不影响去重效果
+      if (this.notifiedFingerprints.size >= this.maxNotifiedFingerprints) {
+        this.notifiedFingerprints.clear();
+      }
+      this.notifiedFingerprints.add(fingerprint);
+    }
+
+    /**
+     * ✨ v1.1.5: 检查指纹是否已通知过
+     */
+    isAlreadyNotified(fingerprint) {
+      return fingerprint && this.notifiedFingerprints.has(fingerprint);
     }
 
     async init() {
@@ -490,6 +518,8 @@
       this.lastTextSnapshot = '';
       this.lastTextChangeTime = 0;
       this.snapshotInitialized = false; // ✨ 重置初始化标记
+      // ✨ v1.1.5: SPA 导航时不清空 notifiedFingerprints
+      // 因为同一会话内不同 URL 可能仍然引用同一消息
       this.init();
     }
 
@@ -593,18 +623,22 @@
 
         const elapsed = Date.now() - this.lastTextChangeTime;
         if (elapsed >= this.debounceTime) {
-          // 文本已稳定！但还需要确认不是和上次通知同一条
+          // 文本已稳定！计算指纹用于去重
           const latestFingerprint = getElementFingerprint(latestMsg);
-          if (latestFingerprint === this.lastFingerprint && currentText === this.lastText) {
+
+          // ✨ v1.1.5: 按指纹去重，一条消息只通知一次
+          // 之前用 (fingerprint && text) 双重判定，但 Svelte/React UI 重渲染
+          // 会导致 textContent 细微变化（空格/换行/字符规范化），
+          // 从而使 currentText !== this.lastText 成立，触发重复通知。
+          // 现在改为只要指纹已通知过就跳过，无论文本是否细微变化。
+          if (this.isAlreadyNotified(latestFingerprint)) {
+            logThrottled('[轮询] 该消息已通知过，跳过 (指纹:', latestFingerprint.substring(0, 30) + ')');
             this.diagnosticInfo.skippedDuplicate++;
-            return; // 同一条消息，跳过
+            this.lastTextChangeTime = 0; // 重置，避免反复进入这个分支
+            return;
           }
 
           // ✨ v1.1.3: 完全放弃流式指示器检查。
-          // 理由：任何 CSS 类名选择器都可能在 React/Tailwind 应用中误匹配。
-          // AI 真正在流式输出时，文本本身每几百毫秒就在变，
-          // 只要文本稳定 ≥ debounceTime，就一定不是在流式输出。
-          // 流式指示器检查仅作为诊断信息使用，不阻断通知。
           const hasStreaming = !usingFallback &&
               hasStreamingIndicator(latestMsg, this.siteConfig.selectors.streaming);
           if (hasStreaming) {
@@ -614,11 +648,12 @@
           log('[轮询] ✅ 文本已稳定 ' + (elapsed / 1000).toFixed(1) + 's，准备通知');
 
           // ✨ v1.1.4: 使用 isTabUnfocused() 替代 isTabHidden()
-          // 语义改为"只要标签页失去焦点就通知"，不再要求标签页完全隐藏
           if (this.onlyWhenHidden && !isTabUnfocused()) {
-            log('[轮询] 标签页聚焦中，跳过通知（但更新指纹）');
+            log('[轮询] 标签页聚焦中，跳过通知（但记录指纹）');
             this.diagnosticInfo.skippedVisible++;
             this.lastTextChangeTime = 0;
+            // ✨ v1.1.5: 即使没发通知，也记录指纹，避免用户切走后又重复发
+            this.markNotified(latestFingerprint);
             this.lastFingerprint = latestFingerprint;
             this.lastText = currentText;
             return;
@@ -627,6 +662,8 @@
           this.lastTextChangeTime = 0; // 防止重复触发
           this.lastFingerprint = latestFingerprint;
           this.lastText = currentText;
+          // ✨ v1.1.5: 标记为已通知
+          this.markNotified(latestFingerprint);
           this.diagnosticInfo.notificationsSent++;
           this.sendNotification(currentText);
         }
@@ -684,6 +721,7 @@
         : 'never');
       console.log('---');
       console.log('诊断统计:', this.diagnosticInfo);
+      console.log('已通知指纹数量:', this.notifiedFingerprints.size, '/', this.maxNotifiedFingerprints);
       console.log('---');
       console.log('排查建议:');
       if (!this.chatContainer) console.log('  ❌ 聊天容器未找到 → 检查 selectors.chatArea');
@@ -855,9 +893,9 @@
       const latestFingerprint = getElementFingerprint(latestMsg);
       log('最新 AI 消息指纹:', latestFingerprint.substring(0, 50), '长度:', latestText.length);
 
-      // 与上次通知的消息相同
-      if (latestFingerprint === this.lastFingerprint && latestText === this.lastText) {
-        log('与上次通知的消息相同，跳过');
+      // ✨ v1.1.5: 按指纹去重
+      if (this.isAlreadyNotified(latestFingerprint)) {
+        log('该消息已通知过，跳过');
         return;
       }
 
@@ -871,10 +909,11 @@
       // 内容过短
       if (latestText.length < 2) { log('消息内容过短，跳过'); return; }
 
-      // ✨ v1.1 修复：使用 document.hidden 替代 document.hasFocus()
       // ✨ v1.1.4: 使用 isTabUnfocused() 替代 isTabHidden()
       if (this.onlyWhenHidden && !isTabUnfocused()) {
-        log('标签页聚焦中，跳过通知（更新指纹）');
+        log('标签页聚焦中，跳过通知（记录指纹）');
+        // ✨ v1.1.5: 即使没发通知，也记录指纹
+        this.markNotified(latestFingerprint);
         this.lastFingerprint = latestFingerprint;
         this.lastText = latestText;
         return;
@@ -884,6 +923,8 @@
       log('✅ AI 回复完成，发送通知！');
       this.lastFingerprint = latestFingerprint;
       this.lastText = latestText;
+      // ✨ v1.1.5: 标记为已通知
+      this.markNotified(latestFingerprint);
       this.diagnosticInfo.notificationsSent++;
       this.sendNotification(latestText);
     }

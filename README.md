@@ -4,6 +4,21 @@
 
 ## 更新日志
 
+### v1.1.5（修复重复通知）
+
+**问题**：用户反馈"能收到通知了，但是通知了不止一次"。
+
+**根本原因**：之前用 `(fingerprint === lastFingerprint && text === lastText)` 双重条件判定"同一条消息"。但 Svelte/React 应用在流式输出结束后还会重新渲染 UI（代码高亮、Markdown 重新解析、按钮出现等），这些渲染会让 `textContent` 产生细微变化（空格/换行/字符规范化），导致 `text !== lastText` 成立，从而触发重复通知。
+
+**修复**：
+
+1. **新增 `notifiedFingerprints` Set 去重** —— 一条 AI 消息只要指纹不变（id/data-id 稳定，或文本前缀相同），无论文本是否细微变化，**只通知一次**。
+2. **指纹优先级**：`id` > `data-id`/`data-message-id`/`data-turn-id`/`data-response-id` > 文本前 200 字（之前 100 字太短，长回复前缀可能相同）。
+3. **Set 大小限制为 50**，超过自动清空，避免内存泄漏。
+4. **即使标签页聚焦时跳过通知，也记录指纹** —— 避免用户看一眼回复又切走时重复发通知。
+5. SPA 导航时**不清空** `notifiedFingerprints`，因为同一会话内不同 URL 可能仍引用同一消息。
+6. 诊断信息（Ctrl+Shift+L）增加"已通知指纹数量"显示，便于验证去重效果。
+
 ### v1.1.4（解决 content script 不注入 + 改为失焦即通知）
 
 **用户反馈**：截图显示 F12 Console 里**完全没有 `[🔔 AI Notify]` 开头的日志**，只有 Z.AI 自身的 Svelte 日志。这说明 content script 根本没注入到页面。
