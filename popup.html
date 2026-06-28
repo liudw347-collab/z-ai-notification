@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=360, initial-scale=1.0">
+  <title>AI Chat Notification</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup-container">
+    <!-- 头部 -->
+    <header class="header">
+      <div class="header-left">
+        <div class="logo">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+            <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+          </svg>
+        </div>
+        <div>
+          <h1 class="title">AI Chat Notification</h1>
+          <p class="subtitle">AI 回复完成时通知你</p>
+        </div>
+      </div>
+      <!-- 主开关 -->
+      <label class="toggle master-toggle" title="全局开关">
+        <input type="checkbox" id="masterToggle" checked>
+        <span class="toggle-slider"></span>
+      </label>
+    </header>
+
+    <!-- 分隔线 -->
+    <div class="divider"></div>
+
+    <!-- 支持的站点 -->
+    <section class="section">
+      <h2 class="section-title">支持的平台</h2>
+      <div class="site-list" id="siteList">
+        <!-- 由 JS 动态生成 -->
+      </div>
+    </section>
+
+    <!-- 分隔线 -->
+    <div class="divider"></div>
+
+    <!-- 设置 -->
+    <section class="section">
+      <h2 class="section-title">通知设置</h2>
+
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">提示音</span>
+          <span class="setting-desc">通知时播放声音</span>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="soundToggle" checked>
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">仅后台通知</span>
+          <span class="setting-desc">标签页可见时不通知</span>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="hiddenOnlyToggle" checked>
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">等待时间</span>
+          <span class="setting-desc" id="debounceDesc">DOM 稳定 3 秒后判定回复完成</span>
+        </div>
+        <div class="slider-group">
+          <input type="range" id="debounceSlider" min="1000" max="8000" step="500" value="3000">
+          <span class="slider-value" id="debounceValue">3s</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- 底部说明 -->
+    <footer class="footer">
+      <p>检测聊天区域 DOM 变化，当变化停止超过设定时间后，判定 AI 回复完成并发送通知。</p>
+      <p class="footer-note">v1.0.0 · 开源项目</p>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

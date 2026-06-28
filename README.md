@@ -1,0 +1,190 @@
+# AI Chat Notification 🔔
+
+> 当 AI 对话回复完成时，发送浏览器通知 —— 让你即使切换到其他标签页也能及时知道回复已就绪。
+
+## 为什么需要这个扩展？
+
+在使用 AI 对话工具（如 Z.AI、ChatGPT、Claude 等）时，AI 的回复通常需要几秒到几十秒。如果你在等待期间切换到其他标签页处理别的事情，很难知道 AI 什么时候回复完毕。
+
+MiniMax 等产品已经内置了这个功能，但很多 AI 平台（包括 Z.AI）还没有。这个扩展就是为了填补这个空白。
+
+## 工作原理
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  1. 用户发送消息，然后切换到其他标签页                      │
+│                          ↓                               │
+│  2. Content Script 持续监听聊天区域的 DOM 变化             │
+│     (通过 MutationObserver)                               │
+│                          ↓                               │
+│  3. AI 流式输出时，DOM 不断变化 → 防抖计时器持续重置        │
+│                          ↓                               │
+│  4. AI 输出完成，DOM 不再变化                              │
+│     → 防抖计时器到期（默认 3 秒）                           │
+│                          ↓                               │
+│  5. 检测到最新 AI 消息内容 → 发送通知请求到 Background      │
+│                          ↓                               │
+│  6. Background Service Worker 创建浏览器通知               │
+│     → 点击通知自动聚焦回对话标签页                          │
+└──────────────────────────────────────────────────────────┘
+```
+
+**核心检测策略：MutationObserver + 防抖（Debounce）**
+
+- AI 流式输出时，DOM 每几十毫秒就会更新一次
+- 当 AI 回复完成，DOM 不再变化
+- 如果 DOM 连续 N 秒没有新变化（默认 3 秒），则判定回复完成
+- 同时检查是否存在流式输出指示器（闪烁光标、loading 动画等）作为辅助判断
+
+## 支持的平台
+
+| 平台 | 域名 | 状态 |
+|------|------|------|
+| Z.AI | z.ai, chatglm.cn | ✅ 支持 |
+| ChatGPT | chatgpt.com | ✅ 支持 |
+| Claude | claude.ai | ✅ 支持 |
+| Gemini | gemini.google.com | ✅ 支持 |
+| MiniMax | minimax.chat | ✅ 支持 |
+| Kimi | kimi.moonshot.cn | ✅ 支持 |
+| DeepSeek | deepseek.com | ✅ 支持 |
+
+## 安装方法
+
+### 从源码安装（开发者模式）
+
+1. 克隆本仓库：
+   ```bash
+   git clone https://github.com/liudw347-collab/z-ai-notification.git
+   ```
+
+2. 打开 Chrome，进入扩展管理页面：
+   - 地址栏输入 `chrome://extensions/`
+   - 或者菜单 → 更多工具 → 扩展程序
+
+3. 打开右上角的 **「开发者模式」** 开关
+
+4. 点击 **「加载已解压的扩展程序」**
+
+5. 选择本项目的根目录（包含 `manifest.json` 的目录）
+
+6. 扩展安装完成！你会在工具栏看到铃铛图标
+
+### 验证安装
+
+- 访问任意支持的 AI 对话网站
+- 点击工具栏的铃铛图标，确认 Popup 正常弹出
+- 发送一条消息，然后切换到其他标签页，等待 AI 回复完成
+
+## 使用说明
+
+### 基本使用
+
+安装后无需额外配置，扩展会自动在支持的网站上工作：
+
+1. 打开 AI 对话页面（如 z.ai）
+2. 发送一条消息
+3. 切换到其他标签页做别的事情
+4. AI 回复完成后，你会收到浏览器通知
+5. 点击通知即可跳转回对话页面
+
+### 配置选项
+
+点击工具栏的铃铛图标打开 Popup 面板：
+
+- **全局开关**：一键启用/禁用所有通知
+- **平台开关**：单独控制每个 AI 平台是否发送通知
+- **提示音**：控制通知是否播放提示音
+- **仅后台通知**：标签页可见时不发送通知（避免干扰）
+- **等待时间**：调整判定回复完成的等待时间（1-8 秒）
+  - 较短的等待时间 = 更快收到通知，但可能误判
+  - 较长的等待时间 = 更准确，但通知会稍晚
+
+## 项目结构
+
+```
+z-ai-notification/
+├── manifest.json          # 扩展清单（Manifest V3）
+├── background.js          # 后台 Service Worker（通知管理）
+├── content.js             # 内容脚本（DOM 监控引擎）
+├── popup.html             # Popup 界面
+├── popup.css              # Popup 样式
+├── popup.js               # Popup 逻辑
+├── icons/                 # 扩展图标
+│   ├── icon16.png
+│   ├── icon48.png
+│   └── icon128.png
+├── generate_icons.py      # 图标生成脚本（开发用）
+└── README.md              # 本文件
+```
+
+### 核心文件说明
+
+| 文件 | 职责 |
+|------|------|
+| `content.js` | 注入到 AI 对话页面，使用 MutationObserver 监听 DOM 变化，通过防抖策略判定回复完成，向 background 发送通知请求 |
+| `background.js` | 接收 content script 消息，创建 `chrome.notifications` 通知，处理通知点击事件（聚焦标签页），管理设置 |
+| `popup.js` | Popup 面板交互逻辑，读取/保存用户设置 |
+
+## 技术细节
+
+### 智能过滤
+
+Content Script 不会对所有 DOM 变化做出反应，而是智能过滤：
+
+- ❌ **排除**：用户输入框的变化（打字不会触发通知）
+- ❌ **排除**：样式/属性变化（hover 效果、焦点切换等）
+- ❌ **排除**：SCRIPT、STYLE、LINK 标签的变化
+- ✅ **关注**：聊天消息区域的新增内容和文本变化
+
+### 防重复通知
+
+- 通过消息指纹（ID、内容哈希）追踪已通知的消息
+- 同一条回复只会通知一次
+
+### SPA 导航支持
+
+- 监听 URL 变化，自动重新初始化监控器
+- 适配单页应用（React/Vue/Angular）的页面切换
+
+### 仅后台通知
+
+- 默认开启，使用 `document.hasFocus()` 检测标签页是否激活
+- 当用户正在查看对话页面时，不会发送多余的通知
+
+## 添加新平台支持
+
+在 `content.js` 的 `SITE_PATTERNS` 数组中添加新的配置：
+
+```javascript
+{
+  match: /new-platform\.com/,    // URL 匹配正则
+  name: 'NewPlatform',            // 通知中显示的名称
+  selectors: {
+    chatArea: ['CSS选择器1', 'CSS选择器2'],   // 聊天容器
+    aiMsg: ['CSS选择器1', 'CSS选择器2'],      // AI 消息
+    streaming: ['CSS选择器1'],                // 流式输出指示器
+    inputArea: ['CSS选择器1']                 // 输入区域
+  }
+}
+```
+
+然后在 `manifest.json` 的 `content_scripts.matches` 中添加 URL 匹配规则。
+
+## 开发
+
+### 调试 Content Script
+
+1. 打开 AI 对话页面
+2. 按 F12 打开开发者工具
+3. 在 Console 中可以看到 `[🔔 AI Notify]` 开头的日志
+4. 要启用详细日志，修改 `content.js` 中的 `const DEBUG = false` 改为 `true`
+
+### 调试 Background Service Worker
+
+1. 进入 `chrome://extensions/`
+2. 找到本扩展，点击「Service Worker」链接
+3. 在打开的 DevTools 中查看日志
+
+## 许可证
+
+MIT License
