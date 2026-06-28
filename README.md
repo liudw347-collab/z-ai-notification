@@ -4,6 +4,31 @@
 
 ## 更新日志
 
+### v1.1.7（按钮状态检测 —— 即时通知，无需防抖等待）
+
+**用户洞察**：用户观察到 Z.AI 的发送按钮（`#send-message-button`）有三种状态，可以精确判断 AI 是否在运行：
+
+| 按钮状态 | 含义 |
+|---|---|
+| 灰色箭头（`disabled=true`） | 空闲，无输入或 AI 已完成 |
+| 黑色箭头（`disabled=false`，箭头图标） | 有输入内容，未发送 |
+| 黑色方块（`disabled=false`，停止图标） | **AI 正在运行** |
+
+**关键转换**：按钮从"黑色方块"变回"灰色箭头"的瞬间，就是 AI 回复完成的精确时刻。
+
+**改进**：
+
+1. **新增按钮状态检测** —— 用 MutationObserver 监听 `#send-message-button` 的 `disabled` 属性和 `class` 变化，以及 SVG 图标变化（`childList`）。
+2. **精确判断逻辑**：
+   - `disabled=true` → 非运行（空闲）
+   - `disabled=false` 且 class 含 `bg-black` 且 SVG path 含 `13.3333` → 黑色箭头（有输入未发送）
+   - `disabled=false` 且 class 含 `bg-black` 且 SVG path 不含 `13.3333` → 黑色方块（**运行中**）
+3. **即时通知** —— 当按钮从"运行中"变为"非运行中"时，立即发通知，无需等待 1.5 秒防抖。比文本稳定性检测更快、更准。
+4. **文本轮询保留作为兜底** —— 按钮检测失败时（如选择器不匹配）仍能用文本轮询工作。
+5. **共用去重机制** —— 按钮检测和文本轮询共用 `notifiedFingerprints` Set，不会重复通知。
+
+**技术细节**：通过 `agent-browser` 实际访问 z.ai 检测按钮 DOM 结构确认了三种状态的精确差异。
+
 ### v1.1.6（防御性修复：扩展上下文失效）
 
 **问题**：用户反馈 F12 Console 出现 `Uncaught Error: Extension context invalidated.`，堆栈指向 `sendNotification` → `pollLatestAIText`。

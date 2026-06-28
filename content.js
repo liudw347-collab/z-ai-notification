@@ -56,6 +56,45 @@
       contentFocused: true,
       // 文本内容区域的 CSS 选择器 —— 只有这些元素内的变化才重置计时器
       contentSelectors: ['.markdown-prose'],
+      // ✨ v1.1.7: 按钮状态检测配置
+      // Z.AI 的发送按钮有三种状态，可以精确判断 AI 是否在运行：
+      //   - 灰色箭头（disabled=true）：空闲，无输入或 AI 已完成
+      //   - 黑色箭头（disabled=false, class 含 bg-black）：有输入未发送
+      //   - 黑色方块（disabled=false, 停止图标）：AI 正在运行
+      // 当按钮从"黑色"状态变回"disabled"状态时，就是 AI 回复完成的瞬间
+      buttonDetection: {
+        // 发送按钮的选择器
+        buttonSelector: '#send-message-button',
+        // 判断按钮是否处于"AI 运行中"状态
+        // 当按钮 enabled（disabled=false）且 class 含 bg-black 时，AI 可能在运行
+        isRunning: (btn) => {
+          if (!btn) return false;
+          // disabled 时一定不在运行
+          if (btn.disabled) return false;
+          // 检查 class 是否包含黑色背景（运行中或有输入未发送）
+          const cls = btn.className || '';
+          if (cls.includes('bg-black') || cls.includes('bg-neutral-50')) {
+            // 进一步检查 SVG：停止图标 vs 箭头图标
+            // 箭头 path: M8 13.3333V2.66667...
+            // 停止图标通常是矩形 rect 或不同的 path
+            const path = btn.querySelector('path');
+            if (path) {
+              const d = path.getAttribute('d') || '';
+              // 箭头的 path 包含 13.3333（向上的箭头）
+              // 停止图标的 path 不同（通常是矩形或 X）
+              if (d.includes('13.3333')) {
+                // 这是箭头，说明有输入未发送，AI 还没运行
+                return false;
+              }
+              // 不是箭头，是停止图标 → AI 正在运行
+              return true;
+            }
+            // 没有 path，但有黑色背景，保守判断为运行中
+            return true;
+          }
+          return false;
+        }
+      },
       selectors: {
         chatArea: [
           '#messages-container',
@@ -279,6 +318,7 @@
           name: pattern.name,
           contentFocused: pattern.contentFocused || false,
           contentSelectors: pattern.contentSelectors || [],
+          buttonDetection: pattern.buttonDetection || null,
           selectors: pattern.selectors
         };
       }
@@ -448,6 +488,9 @@
       // 防止 Svelte/React UI 重渲染导致 textContent 细微变化触发重复通知
       this.notifiedFingerprints = new Set();
       this.maxNotifiedFingerprints = 50; // 限制大小避免内存泄漏
+      // ✨ v1.1.7: 按钮状态监控
+      this.buttonObserver = null;
+      this.buttonWasRunning = false;
       this.diagnosticInfo = {
         initTime: Date.now(),
         mutationsReceived: 0,
@@ -535,6 +578,9 @@
       this.lastTextSnapshot = '';
       this.lastTextChangeTime = 0;
       this.snapshotInitialized = false; // ✨ 重置初始化标记
+      // ✨ v1.1.7: 重置按钮状态
+      this.buttonWasRunning = false;
+      if (this.buttonObserver) { this.buttonObserver.disconnect(); this.buttonObserver = null; }
       // ✨ v1.1.5: SPA 导航时不清空 notifiedFingerprints
       // 因为同一会话内不同 URL 可能仍然引用同一消息
       this.init();
@@ -565,6 +611,12 @@
         attributes: false
       });
 
+      // ✨ v1.1.7: 按钮状态检测 —— 精确判断 AI 运行/完成
+      // 比文本轮询更快、更准（文本轮询要等 1.5s 防抖，按钮状态变化是即时的）
+      if (this.siteConfig.buttonDetection) {
+        this.startButtonMonitoring();
+      }
+
       // ✨ 内容聚焦模式下，启动文本轮询作为辅助检测
       // 每 500ms 采样最新 AI 消息的文本，独立于 DOM mutation 判断
       if (this.siteConfig.contentFocused) {
@@ -586,6 +638,125 @@
       this.textPollingTimer = setInterval(() => {
         this.pollLatestAIText();
       }, 500);
+    }
+
+    // ==================================================================
+    //  ✨ v1.1.7: 按钮状态监控 —— 精确判断 AI 运行/完成
+    //  通过 MutationObserver 监听发送按钮的 disabled 属性和 class 变化
+    //  当按钮从"运行中"（黑色方块/停止图标）变回"空闲"（灰色/disabled）时，
+    //  立即触发通知，无需等待文本防抖
+    // ==================================================================
+
+    startButtonMonitoring() {
+      const config = this.siteConfig.buttonDetection;
+      if (!config || !config.buttonSelector) return;
+
+      // 查找按钮
+      const findButton = () => {
+        try {
+          return document.querySelector(config.buttonSelector);
+        } catch (e) {
+          return null;
+        }
+      };
+
+      // 初始状态
+      let button = findButton();
+      this.buttonWasRunning = false;
+
+      // 创建独立的 observer 监听按钮属性变化
+      this.buttonObserver = new MutationObserver((mutations) => {
+        for (const mutation of mutations) {
+          if (mutation.type === 'attributes' &&
+              (mutation.attributeName === 'disabled' ||
+               mutation.attributeName === 'class')) {
+            this.checkButtonStateChange();
+            break;
+          }
+        }
+      });
+
+      // 尝试观察按钮，如果按钮还不存在则重试
+      const tryObserve = (retryCount = 0) => {
+        button = findButton();
+        if (button) {
+          this.buttonObserver.observe(button, {
+            attributes: true,
+            attributeFilter: ['disabled', 'class'],
+            childList: true,  // SVG 图标可能整个被替换
+            subtree: true
+          });
+          log('[按钮监控] 已开始监听发送按钮:', button);
+          // 初始检查一次状态
+          this.checkButtonStateChange();
+        } else if (retryCount < 30) {
+          // 按钮可能还没渲染，1 秒后重试
+          setTimeout(() => tryObserve(retryCount + 1), 1000);
+        } else {
+          warn('[按钮监控] 发送按钮未找到，回退到文本轮询模式');
+        }
+      };
+
+      tryObserve();
+    }
+
+    /**
+     * 检查按钮状态变化，如果从"运行中"变为"空闲"，触发通知
+     */
+    checkButtonStateChange() {
+      const config = this.siteConfig.buttonDetection;
+      if (!config) return;
+
+      const button = document.querySelector(config.buttonSelector);
+      if (!button) return;
+
+      const isRunningNow = config.isRunning(button);
+
+      log('[按钮监控] 状态检查: isRunning=' + isRunningNow +
+          ', wasRunning=' + this.buttonWasRunning +
+          ', disabled=' + button.disabled +
+          ', class=' + (button.className || '').substring(0, 50));
+
+      // 关键转换：从"运行中"变为"非运行中" = AI 回复完成
+      if (this.buttonWasRunning && !isRunningNow) {
+        log('[按钮监控] ✅✅ 检测到 AI 回复完成（按钮状态变化）！');
+
+        // 获取最新 AI 消息内容用于通知预览
+        const aiMessages = queryAll(this.siteConfig.selectors.aiMsg);
+        let latestText = '';
+        let latestMsg = null;
+        if (aiMessages.length > 0) {
+          latestMsg = aiMessages[aiMessages.length - 1];
+          latestText = getCleanText(latestMsg);
+        }
+
+        // 去重检查（与文本轮询共用 notifiedFingerprints）
+        const fingerprint = getElementFingerprint(latestMsg);
+        if (this.isAlreadyNotified(fingerprint)) {
+          log('[按钮监控] 该消息已通知过，跳过');
+          this.buttonWasRunning = isRunningNow;
+          return;
+        }
+
+        // 失焦检查
+        if (this.onlyWhenHidden && !isTabUnfocused()) {
+          log('[按钮监控] 标签页聚焦中，跳过通知（但记录指纹）');
+          this.markNotified(fingerprint);
+          this.buttonWasRunning = isRunningNow;
+          return;
+        }
+
+        // 发送通知
+        this.markNotified(fingerprint);
+        this.diagnosticInfo.notificationsSent++;
+        if (latestText.length > 0) {
+          this.sendNotification(latestText);
+        } else {
+          this.sendNotification('AI 已完成回复');
+        }
+      }
+
+      this.buttonWasRunning = isRunningNow;
     }
 
     pollLatestAIText() {
@@ -1022,6 +1193,8 @@
       if (this.observer) { this.observer.disconnect(); this.observer = null; }
       if (this.debounceTimer) { clearTimeout(this.debounceTimer); this.debounceTimer = null; }
       if (this.textPollingTimer) { clearInterval(this.textPollingTimer); this.textPollingTimer = null; }
+      // ✨ v1.1.7: 清理按钮 observer
+      if (this.buttonObserver) { this.buttonObserver.disconnect(); this.buttonObserver = null; }
       this.active = false;
       log('监控器已销毁');
     }
