@@ -3,23 +3,20 @@
  *
  * 核心检测引擎：通过 MutationObserver + 防抖策略检测 AI 回复完成。
  *
- * v1.1.2 关键修复（根据用户反馈定位的真凶）：
- *   9. 彻底删除所有站点的 [class*="cursor"] 流式指示器选择器 ——
- *      这个选择器会匹配到 cursor-pointer/cursor-text/cursor-default 等
- *      Tailwind 常见类名，导致 hasStreamingIndicator 永远返回 true，
- *      通知永远发不出。这是"测试通知能收到但 AI 回复收不到"的根本原因。
- *  10. 新增"防卡死保障"：文本稳定超过 debounceTime * 3 后，
- *      即使流式指示器检查返回 true 也强制发通知（避免任何选择器误匹配卡死）。
- *  11. hasStreamingIndicator 改为只在"最新 AI 消息内"查找，
- *      不再检查整个聊天容器（避免被旧消息的按钮误匹配）。
+ * v1.1.3 彻底重构检测策略（根据用户进一步反馈）：
+ *  12. 完全放弃"流式指示器检测"这种不可靠的方式。
+ *      理由：任何 CSS 类名选择器（[class*="streaming"], [class*="cursor"], ...）
+ *      都可能在 React/Tailwind 应用中误匹配。而 AI 真正在流式输出时，
+ *      文本本身每几百毫秒就在变，根本不需要靠光标/动画判断。
+ *      新策略：只要文本稳定 ≥ 防抖时间，就发通知。纯文本驱动，零依赖 CSS。
+ *  13. 内容聚焦模式（contentFocused）下完全禁用 MutationObserver 触发的
+ *      checkForCompletedResponse，避免与轮询冲突、产生重复日志。
+ *      轮询已经是主检测路径，MutationObserver 只作为可选辅助。
+ *  14. 添加详细的轮询频率限制日志（避免 F12 被频满）。
  *
- * v1.1.1 改进：
- *   6. 配置选择器未匹配时回退到聊天区域文本。
- *   7. 回退模式下跳过流式指示器检查。
- *   8. 开启 DEBUG 日志 + Ctrl+Shift+L 诊断快捷键。
- *
- * v1.1 改进（修复版）：
- *   1-5. queryAll 顺序、初始化快照、document.hidden、缓存配置、降低文本阈值。
+ * v1.1.2 删除 [class*="cursor"] 选择器。
+ * v1.1.1 回退策略 + 诊断快捷键。
+ * v1.1.0 queryAll 顺序、初始化快照、document.hidden、缓存配置。
  */
 
 (function () {
@@ -27,8 +24,19 @@
 
   // ✨ v1.1.1: 默认开启 DEBUG，方便排查。问题解决后可改回 false。
   const DEBUG = true;
+  // ✨ v1.1.3: 轮询日志限流，避免 F12 被频满。
+  // "文本未变"这种高频路径只在每隔 N 次轮询才输出一次。
+  let pollLogCounter = 0;
   const log = (...args) => DEBUG && console.log('[🔔 AI Notify]', ...args);
   const warn = (...args) => console.warn('[🔔 AI Notify]', ...args);
+  const logThrottled = (...args) => {
+    if (!DEBUG) return;
+    pollLogCounter++;
+    // 每 10 次轮询（约 5 秒）输出一次高频日志
+    if (pollLogCounter % 10 === 0) {
+      console.log('[🔔 AI Notify]', ...args, `(1/10 采样)`);
+    }
+  };
 
   // ====================================================================
   //  站点配置
@@ -344,6 +352,8 @@
   }
 
   function hasStreamingIndicator(el, streamingSelectors) {
+    // ✨ v1.1.3: 这个函数不再用于阻断通知，仅用于诊断信息输出。
+    // 真正的流式状态判断改为完全依赖文本变化频率。
     if (!el) return false;
     for (const sel of streamingSelectors) {
       try {
@@ -576,23 +586,15 @@
             return; // 同一条消息，跳过
           }
 
-          // 检查流式指示器
-          // ✨ v1.1.1: 仅在使用具体 AI 消息元素时检查，
-          // 回退模式下跳过以避免误匹配 cursor-pointer 等常见类名
-          //
-          // ✨ v1.1.2 防卡死保障：如果文本已经稳定超过 debounceTime * 3，
-          // 即使流式指示器检查返回 true 也强制发通知。
-          // 这是为了避免任何选择器误匹配导致永远卡在"等待流式"状态。
-          const forceNotifyDueToTimeout = elapsed >= this.debounceTime * 3;
-          if (!usingFallback && !forceNotifyDueToTimeout &&
-              hasStreamingIndicator(latestMsg, this.siteConfig.selectors.streaming)) {
-            log('[轮询] 仍有流式指示器，等待 (elapsed=' + (elapsed / 1000).toFixed(1) + 's)');
-            this.diagnosticInfo.skippedStreaming++;
-            return;
-          }
-          if (forceNotifyDueToTimeout) {
-            log('[轮询] ⚠️ 防卡死保障触发：文本已稳定 ' + (elapsed / 1000).toFixed(1) +
-                's（超过 ' + (this.debounceTime * 3 / 1000).toFixed(1) + 's），强制发通知');
+          // ✨ v1.1.3: 完全放弃流式指示器检查。
+          // 理由：任何 CSS 类名选择器都可能在 React/Tailwind 应用中误匹配。
+          // AI 真正在流式输出时，文本本身每几百毫秒就在变，
+          // 只要文本稳定 ≥ debounceTime，就一定不是在流式输出。
+          // 流式指示器检查仅作为诊断信息使用，不阻断通知。
+          const hasStreaming = !usingFallback &&
+              hasStreamingIndicator(latestMsg, this.siteConfig.selectors.streaming);
+          if (hasStreaming) {
+            logThrottled('[轮询] 检测到流式指示器元素，但文本已稳定，仍准备发通知');
           }
 
           log('[轮询] ✅ 文本已稳定 ' + (elapsed / 1000).toFixed(1) + 's，准备通知');
@@ -681,7 +683,14 @@
       this.diagnosticInfo.significantMutations += significant.length;
       if (significant.length === 0) return;
 
-      log(`检测到 ${significant.length} 个有意义的 DOM 变化`);
+      logThrottled(`检测到 ${significant.length} 个有意义的 DOM 变化`);
+
+      // ✨ v1.1.3: 内容聚焦模式下完全跳过 MutationObserver 触发的检测，
+      // 避免与轮询冲突、产生重复日志。
+      // 轮询已经是主检测路径，MutationObserver 在这里只用于诊断统计。
+      if (this.siteConfig.contentFocused) {
+        return;
+      }
 
       if (this.debounceTimer) clearTimeout(this.debounceTimer);
 
@@ -829,13 +838,11 @@
         return;
       }
 
-      // 仍在流式输出（回退模式下跳过此检查）
-      // ✨ v1.1.2: 加上防卡死保障
-      const checkForStreaming = !usingFallback;
-      if (checkForStreaming && hasStreamingIndicator(latestMsg, this.siteConfig.selectors.streaming)) {
-        log('检测到流式输出指示器，等待... (2s 后重试)');
-        this.debounceTimer = setTimeout(() => this.checkForCompletedResponse(), 2000);
-        return;
+      // ✨ v1.1.3: 同样放弃流式指示器检查，仅依赖文本稳定性
+      const hasStreaming = !usingFallback &&
+          hasStreamingIndicator(latestMsg, this.siteConfig.selectors.streaming);
+      if (hasStreaming) {
+        log('检测到流式指示器元素，但文本已稳定，仍准备发通知');
       }
 
       // 内容过短
