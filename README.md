@@ -4,6 +4,20 @@
 
 ## 更新日志
 
+### v1.1.6（防御性修复：扩展上下文失效）
+
+**问题**：用户反馈 F12 Console 出现 `Uncaught Error: Extension context invalidated.`，堆栈指向 `sendNotification` → `pollLatestAIText`。
+
+**原因**：这不是扩展代码本身的 bug，而是**扩展重载的副作用**。当你重新加载扩展（升级到 v1.1.5）时，z.ai 页面上**旧版 content script 还在运行**（轮询定时器没停），它尝试调用 `chrome.runtime.sendMessage()` 发通知时，发现扩展上下文已失效（因为扩展被重载了），于是抛出错误。旧脚本会反复触发这个错误，刷屏 Console。
+
+**修复**：
+
+1. **新增 `isExtensionContextValid()` 检测函数** —— 通过 `chrome.runtime.id` 是否为 undefined 判断扩展上下文是否有效。
+2. **`pollLatestAIText` 开头检测上下文** —— 失效时立即停止轮询定时器，输出一条提示，不再反复报错。
+3. **`sendNotification` 用 try/catch 包裹** —— 即使检测漏了，同步抛出的错误也能被捕获，输出警告而非 Uncaught Error，并停止轮询。
+
+**用户操作**：如果看到这个错误，**刷新 z.ai 页面**（F5 或 Ctrl+R）即可加载新版本，错误消失。以后升级扩展后，记得刷新所有打开的 AI 对话页面。
+
 ### v1.1.5（修复重复通知）
 
 **问题**：用户反馈"能收到通知了，但是通知了不止一次"。

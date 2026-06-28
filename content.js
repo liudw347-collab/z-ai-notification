@@ -403,6 +403,23 @@
     return false;
   }
 
+  /**
+   * ✨ v1.1.6: 检查扩展上下文是否仍然有效
+   *
+   * 扩展被重载/更新/禁用后，旧 content script 中的 chrome.runtime
+   * 会变为失效状态，此时调用 chrome.runtime.sendMessage 等会抛出
+   * 'Extension context invalidated' 错误。
+   *
+   * 检测方法：chrome.runtime.id 在上下文失效后会变为 undefined。
+   */
+  function isExtensionContextValid() {
+    try {
+      return typeof chrome !== 'undefined' && chrome.runtime && !!chrome.runtime.id;
+    } catch (e) {
+      return false;
+    }
+  }
+
   // ====================================================================
   //  聊天监控器 v1.1 —— 支持内容聚焦模式 + 修复多项 bug
   // ====================================================================
@@ -572,6 +589,17 @@
     }
 
     pollLatestAIText() {
+      // ✨ v1.1.6: 扩展上下文失效时停止轮询，避免反复报错
+      // 这通常发生在扩展被重载/更新后，旧 content script 还在运行
+      if (!isExtensionContextValid()) {
+        if (this.textPollingTimer) {
+          clearInterval(this.textPollingTimer);
+          this.textPollingTimer = null;
+        }
+        warn('扩展上下文已失效（可能被重载），停止轮询。请刷新页面以加载新版本。');
+        return;
+      }
+
       this.diagnosticInfo.textPolls++;
       this.diagnosticInfo.lastPollTime = Date.now();
 
@@ -930,24 +958,39 @@
     }
 
     sendNotification(text) {
-      chrome.runtime.sendMessage(
-        {
-          type: 'AI_RESPONSE_COMPLETE',
-          data: {
-            preview: text.substring(0, 150) + (text.length > 150 ? '...' : ''),
-            url: window.location.href,
-            siteName: this.siteConfig.name,
-            timestamp: Date.now()
+      // ✨ v1.1.6: 检查扩展上下文是否有效，避免 'Extension context invalidated' 错误
+      if (!isExtensionContextValid()) {
+        warn('扩展上下文已失效，无法发送通知。请刷新页面。');
+        return;
+      }
+      try {
+        chrome.runtime.sendMessage(
+          {
+            type: 'AI_RESPONSE_COMPLETE',
+            data: {
+              preview: text.substring(0, 150) + (text.length > 150 ? '...' : ''),
+              url: window.location.href,
+              siteName: this.siteConfig.name,
+              timestamp: Date.now()
+            }
+          },
+          (response) => {
+            if (chrome.runtime.lastError) {
+              console.error('[AI Notify] 发送通知消息失败:', chrome.runtime.lastError.message);
+            } else {
+              log('通知请求已发送');
+            }
           }
-        },
-        (response) => {
-          if (chrome.runtime.lastError) {
-            console.error('[AI Notify] 发送通知消息失败:', chrome.runtime.lastError.message);
-          } else {
-            log('通知请求已发送');
-          }
+        );
+      } catch (e) {
+        // 捕获 'Extension context invalidated' 等同步抛出的错误
+        warn('发送通知时出错（扩展可能已被重载）:', e.message);
+        // 停止轮询，避免反复报错
+        if (this.textPollingTimer) {
+          clearInterval(this.textPollingTimer);
+          this.textPollingTimer = null;
         }
-      );
+      }
     }
 
     getSettings() {
