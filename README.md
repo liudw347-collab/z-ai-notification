@@ -4,6 +4,18 @@
 
 ## 更新日志
 
+### v1.1.2（彻底修复流式指示器误判）
+
+**根本原因定位**：用户反馈"测试通知能收到，但 AI 回复完成时收不到"。通过 Ctrl+Shift+L 诊断日志发现 `[轮询] 仍有流式指示器，等待` 无限循环。
+
+**问题根源**：`[class*="cursor"]` 这个流式指示器选择器会匹配到 Tailwind 的 `cursor-pointer`、`cursor-text`、`cursor-default` 等常见类名（几乎所有按钮、链接都有这些类），导致 `hasStreamingIndicator` 永远返回 true，通知永远发不出。
+
+**修复**：
+
+1. **彻底删除所有站点的 `[class*="cursor"]` 选择器** —— 这个选择器带来的误匹配远多于真正的流式光标检测。改为只匹配 `[class*="cursor-blink"]`、`[class*="typing-indicator"]`、`[class*="streaming"]`、`[class*="loading-dots"]` 等更精确的类名。
+2. **新增"防卡死保障"机制** —— 文本稳定超过 `debounceTime × 3`（默认 4.5 秒）后，即使流式指示器检查返回 true 也强制发通知。任何选择器误匹配都不会再让通知卡死。
+3. 同样删除了 `[class*="typing"]`、`[class*="pulse"]` 等过于宽泛的选择器，避免类似问题。
+
 ### v1.1.1（检测可靠性修复）
 
 针对"测试通知能收到，但 AI 回复完成时收不到通知"的问题做了三项关键修复：

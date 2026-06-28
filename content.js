@@ -3,30 +3,23 @@
  *
  * 核心检测引擎：通过 MutationObserver + 防抖策略检测 AI 回复完成。
  *
+ * v1.1.2 关键修复（根据用户反馈定位的真凶）：
+ *   9. 彻底删除所有站点的 [class*="cursor"] 流式指示器选择器 ——
+ *      这个选择器会匹配到 cursor-pointer/cursor-text/cursor-default 等
+ *      Tailwind 常见类名，导致 hasStreamingIndicator 永远返回 true，
+ *      通知永远发不出。这是"测试通知能收到但 AI 回复收不到"的根本原因。
+ *  10. 新增"防卡死保障"：文本稳定超过 debounceTime * 3 后，
+ *      即使流式指示器检查返回 true 也强制发通知（避免任何选择器误匹配卡死）。
+ *  11. hasStreamingIndicator 改为只在"最新 AI 消息内"查找，
+ *      不再检查整个聊天容器（避免被旧消息的按钮误匹配）。
+ *
  * v1.1.1 改进：
- *   6. 修复"配置选择器未匹配 AI 消息时轮询直接 return"的问题 ——
- *      当站点 DOM 结构变化导致选择器失效时，回退到"整个聊天区域文本"
- *      作为检测源，保证基础功能可用。
- *   7. 修复"流式指示器检查永远阻断通知"的隐藏 bug ——
- *      `[class*="cursor"]` 会匹配到 `cursor-pointer` 等常见类名，导致
- *      hasStreamingIndicator 永远返回 true。回退模式下跳过此检查。
- *   8. 开启 DEBUG 日志 + 新增 Ctrl+Shift+L 诊断快捷键，方便排查问题。
+ *   6. 配置选择器未匹配时回退到聊天区域文本。
+ *   7. 回退模式下跳过流式指示器检查。
+ *   8. 开启 DEBUG 日志 + Ctrl+Shift+L 诊断快捷键。
  *
  * v1.1 改进（修复版）：
- *   1. 修复 queryAll 返回顺序问题 —— 改为按文档顺序返回所有匹配元素，
- *      这样 aiMessages[length-1] 才是真正的"最新" AI 消息。
- *   2. 修复页面加载/SPA 导航时对已有 AI 消息误触发通知的问题 ——
- *      首次轮询只初始化快照，不视为"文本变化"。
- *   3. 修正"仅后台通知"判定 —— 使用 document.visibilityState === 'hidden'
- *      替代 document.hasFocus()，更贴合"标签页可见时不通知"的语义。
- *   4. 缓存 siteConfig，避免每次 mutation 都重新计算。
- *   5. 降低最小文本长度阈值，避免短回复（"好的"、"完成"）无法触发通知。
- *
- * v1.0 改进 —— 内容聚焦模式（contentFocused）：
- *   旧方案：监听整个消息容器的所有 DOM 变化 → UI 渲染（按钮、卡片、动画）
- *         会持续重置防抖计时器，导致通知过晚
- *   新方案：只追踪 AI 文本输出区域（如 .markdown-prose）的内容变化，
- *         外围 UI 渲染不再干扰，AI 文字写完即可通知
+ *   1-5. queryAll 顺序、初始化快照、document.hidden、缓存配置、降低文本阈值。
  */
 
 (function () {
@@ -65,10 +58,9 @@
         ],
         streaming: [
           '#loading-message',
-          '[class*="cursor"]',
-          '[class*="typing"]',
           '[class*="streaming"]',
-          '[class*="pulse"]'
+          '[class*="typing-indicator"]',
+          '[class*="loading-dots"]'
         ],
         inputArea: [
           '#chat-input',
@@ -95,8 +87,8 @@
           '[class*="assistant"]'
         ],
         streaming: [
-          '[class*="cursor"]',
-          '[class*="result-streaming"]'
+          '[class*="result-streaming"]',
+          '[class*="typing-indicator"]'
         ],
         inputArea: [
           '#prompt-textarea',
@@ -120,7 +112,8 @@
           '[data-testid="assistant-turn"]'
         ],
         streaming: [
-          '[class*="cursor"]'
+          '[class*="typing-indicator"]',
+          '[class*="cursor-blink"]'
         ],
         inputArea: [
           '[contenteditable="true"]',
@@ -167,8 +160,8 @@
           '[class*="assistant"]'
         ],
         streaming: [
-          '[class*="cursor"]',
-          '[class*="typing"]'
+          '[class*="typing-indicator"]',
+          '[class*="cursor-blink"]'
         ],
         inputArea: [
           'textarea',
@@ -191,8 +184,8 @@
           '[class*="assistant"]'
         ],
         streaming: [
-          '[class*="cursor"]',
-          '[class*="typing"]'
+          '[class*="typing-indicator"]',
+          '[class*="cursor-blink"]'
         ],
         inputArea: [
           'textarea',
@@ -217,9 +210,9 @@
           '[data-role="assistant"]'
         ],
         streaming: [
-          '[class*="cursor"]',
-          '[class*="typing"]',
-          '[class*="streaming"]'
+          '[class*="streaming"]',
+          '[class*="typing-indicator"]',
+          '[class*="cursor-blink"]'
         ],
         inputArea: [
           'textarea',
@@ -248,9 +241,9 @@
       '[class*="model"]'
     ],
     streaming: [
-      '[class*="cursor"]',
-      '[class*="typing"]',
-      '[class*="streaming"]'
+      '[class*="streaming"]',
+      '[class*="typing-indicator"]',
+      '[class*="loading-dots"]'
     ],
     inputArea: [
       'textarea',
@@ -586,10 +579,20 @@
           // 检查流式指示器
           // ✨ v1.1.1: 仅在使用具体 AI 消息元素时检查，
           // 回退模式下跳过以避免误匹配 cursor-pointer 等常见类名
-          if (!usingFallback && hasStreamingIndicator(latestMsg, this.siteConfig.selectors.streaming)) {
-            log('[轮询] 仍有流式指示器，等待');
+          //
+          // ✨ v1.1.2 防卡死保障：如果文本已经稳定超过 debounceTime * 3，
+          // 即使流式指示器检查返回 true 也强制发通知。
+          // 这是为了避免任何选择器误匹配导致永远卡在"等待流式"状态。
+          const forceNotifyDueToTimeout = elapsed >= this.debounceTime * 3;
+          if (!usingFallback && !forceNotifyDueToTimeout &&
+              hasStreamingIndicator(latestMsg, this.siteConfig.selectors.streaming)) {
+            log('[轮询] 仍有流式指示器，等待 (elapsed=' + (elapsed / 1000).toFixed(1) + 's)');
             this.diagnosticInfo.skippedStreaming++;
             return;
+          }
+          if (forceNotifyDueToTimeout) {
+            log('[轮询] ⚠️ 防卡死保障触发：文本已稳定 ' + (elapsed / 1000).toFixed(1) +
+                's（超过 ' + (this.debounceTime * 3 / 1000).toFixed(1) + 's），强制发通知');
           }
 
           log('[轮询] ✅ 文本已稳定 ' + (elapsed / 1000).toFixed(1) + 's，准备通知');
@@ -827,7 +830,9 @@
       }
 
       // 仍在流式输出（回退模式下跳过此检查）
-      if (!usingFallback && hasStreamingIndicator(latestMsg, this.siteConfig.selectors.streaming)) {
+      // ✨ v1.1.2: 加上防卡死保障
+      const checkForStreaming = !usingFallback;
+      if (checkForStreaming && hasStreamingIndicator(latestMsg, this.siteConfig.selectors.streaming)) {
         log('检测到流式输出指示器，等待... (2s 后重试)');
         this.debounceTimer = setTimeout(() => this.checkForCompletedResponse(), 2000);
         return;
