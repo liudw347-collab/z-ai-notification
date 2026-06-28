@@ -42,7 +42,7 @@ function loadSettings() {
         result.settings || {
           enabled: true,
           sound: true,
-          debounceTime: 3000,
+          debounceTime: 1500,
           onlyNotifyWhenHidden: true,
           sites: {}
         }
@@ -90,7 +90,7 @@ function applySettingsToUI() {
   masterToggle.checked = currentSettings.enabled !== false;
   soundToggle.checked = currentSettings.sound !== false;
   hiddenOnlyToggle.checked = currentSettings.onlyNotifyWhenHidden !== false;
-  debounceSlider.value = currentSettings.debounceTime || 3000;
+  debounceSlider.value = currentSettings.debounceTime || 1500;
   updateDebounceDisplay();
   updateDisabledState();
 }
@@ -147,7 +147,7 @@ function bindEvents() {
 function updateDebounceDisplay() {
   const seconds = parseInt(debounceSlider.value, 10) / 1000;
   debounceValue.textContent = seconds + 's';
-  debounceDesc.textContent = `DOM 稳定 ${seconds} 秒后判定回复完成`;
+  debounceDesc.textContent = `文本稳定 ${seconds} 秒后判定回复完成`;
 }
 
 // ====== 更新禁用状态 ======

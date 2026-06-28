@@ -12,7 +12,7 @@ const notificationTabMap = new Map();
 const DEFAULT_SETTINGS = {
   enabled: true,
   sound: true,
-  debounceTime: 3000,
+  debounceTime: 1500,
   onlyNotifyWhenHidden: true,
   sites: {
     'z.ai': true,
