@@ -25,49 +25,40 @@
       match: /z\.ai|chatglm\.cn/,
       name: 'Z.AI',
       selectors: {
-        // 聊天消息容器 —— 我们观察这个区域的 DOM 变化
+        // 聊天消息容器 —— 基于 z.ai 实际 DOM（Svelte 应用）
+        // URL 格式：https://chat.z.ai/c/{chat-id}
         chatArea: [
+          '#messages-container',
+          '#chat-container',
           '[class*="chat-messages"]',
-          '[class*="chatMessages"]',
-          '[class*="message-list"]',
-          '[class*="ChatMessage"]',
-          '[class*="messageList"]',
           '[role="log"]',
-          '[class*="conversation"]',
-          '[class*="Conversation"]',
-          'main [class*="flex"] [class*="flex-col"]',
           'main'
         ],
         // AI 回复消息的选择器
+        // z.ai 的 AI 回复使用 .markdown-prose 类渲染 Markdown 内容
         aiMsg: [
-          '[data-role="assistant"]',
-          '[class*="assistant-message"]',
+          '.markdown-prose',
+          '[id^="response-content-container"]',
+          '.regenerate-response-button',
           '[class*="assistant"]',
-          '[class*="ai-message"]',
-          '[class*="bot-message"]',
-          '[class*="msg-bot"]',
-          '[class*="msg-ai"]',
-          '[class*="markdown"][class*="prose"]',
-          '.markdown-body'
+          '[data-role="assistant"]'
         ],
         // 流式输出/正在输入的指示器
         streaming: [
-          '[class*="cursor-blink"]',
-          '[class*="typing-indicator"]',
-          '[class*="streaming-cursor"]',
-          '[class*="loading-dots"]',
-          '[class*="pulse-dot"]',
-          'span[class*="animate"]'
+          '#loading-message',
+          '[class*="cursor"]',
+          '[class*="typing"]',
+          '[class*="streaming"]',
+          '[class*="loading"]',
+          '[class*="pulse"]'
         ],
         // 用户输入区域（观察时排除这些区域的变动）
         inputArea: [
+          '#chat-input',
+          '.messageInputContainer',
+          '#send-message-button',
           'textarea',
           '[contenteditable="true"]',
-          '[class*="input-area"]',
-          '[class*="editor"]',
-          '[class*="compose"]',
-          '[class*="prompt-input"]',
-          '[class*="ChatInput"]',
           '[role="textbox"]'
         ]
       }

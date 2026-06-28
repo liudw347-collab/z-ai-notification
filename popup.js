@@ -5,7 +5,7 @@
 
 // ====== 站点列表配置 ======
 const SITES = [
-  { key: 'z.ai', name: 'Z.AI', domain: 'z.ai' },
+  { key: 'z.ai', name: 'Z.AI', domain: 'chat.z.ai' },
   { key: 'chatglm.cn', name: 'ChatGLM', domain: 'chatglm.cn' },
   { key: 'chatgpt.com', name: 'ChatGPT', domain: 'chatgpt.com' },
   { key: 'claude.ai', name: 'Claude', domain: 'claude.ai' },
