@@ -3,17 +3,18 @@
  *
  * 核心检测引擎：通过 MutationObserver + 防抖策略检测 AI 回复完成。
  *
- * v1.1.3 彻底重构检测策略（根据用户进一步反馈）：
- *  12. 完全放弃"流式指示器检测"这种不可靠的方式。
- *      理由：任何 CSS 类名选择器（[class*="streaming"], [class*="cursor"], ...）
- *      都可能在 React/Tailwind 应用中误匹配。而 AI 真正在流式输出时，
- *      文本本身每几百毫秒就在变，根本不需要靠光标/动画判断。
- *      新策略：只要文本稳定 ≥ 防抖时间，就发通知。纯文本驱动，零依赖 CSS。
- *  13. 内容聚焦模式（contentFocused）下完全禁用 MutationObserver 触发的
- *      checkForCompletedResponse，避免与轮询冲突、产生重复日志。
- *      轮询已经是主检测路径，MutationObserver 只作为可选辅助。
- *  14. 添加详细的轮询频率限制日志（避免 F12 被频满）。
+ * v1.1.4 关键修复（根据用户进一步反馈）：
+ *  15. 完全放弃"仅后台通知"语义 —— 改为"只要标签页失去焦点就通知"。
+ *      之前用 document.visibilityState==='hidden' 判断，标签页可见但无焦点时不发。
+ *      现在改为 !document.hasFocus()，只要用户切走就发，更符合用户预期。
+ *  16. manifest matches 改为 <all_urls>，content.js 在所有网站加载，
+ *      但只在匹配的站点上启动监控。解决"manifest matches 未匹配实际 URL"
+ *      导致 content script 完全不注入的问题。
+ *  17. 启动时立即输出一条醒目的日志（不受 DEBUG 控制），
+ *      方便确认 content script 是否注入。
+ *  18. 未知站点提前退出时也输出一条警告，便于诊断。
  *
+ * v1.1.3 完全放弃流式指示器检测，纯文本驱动。
  * v1.1.2 删除 [class*="cursor"] 选择器。
  * v1.1.1 回退策略 + 诊断快捷键。
  * v1.1.0 queryAll 顺序、初始化快照、document.hidden、缓存配置。
@@ -22,21 +23,25 @@
 (function () {
   'use strict';
 
+  // ✨ v1.1.4: 启动日志不受 DEBUG 控制，总是输出，便于确认注入。
   // ✨ v1.1.1: 默认开启 DEBUG，方便排查。问题解决后可改回 false。
   const DEBUG = true;
   // ✨ v1.1.3: 轮询日志限流，避免 F12 被频满。
-  // "文本未变"这种高频路径只在每隔 N 次轮询才输出一次。
   let pollLogCounter = 0;
   const log = (...args) => DEBUG && console.log('[🔔 AI Notify]', ...args);
   const warn = (...args) => console.warn('[🔔 AI Notify]', ...args);
   const logThrottled = (...args) => {
     if (!DEBUG) return;
     pollLogCounter++;
-    // 每 10 次轮询（约 5 秒）输出一次高频日志
     if (pollLogCounter % 10 === 0) {
       console.log('[🔔 AI Notify]', ...args, `(1/10 采样)`);
     }
   };
+
+  // ✨ v1.1.4: 启动时立即输出一条醒目的日志（不受 DEBUG 控制）
+  // 这样在 F12 Console 中能看到 content script 是否注入
+  console.log('%c[🔔 AI Notify] Content script 已加载于 ' + location.href,
+    'background: #6366f1; color: white; padding: 2px 6px; border-radius: 3px;');
 
   // ====================================================================
   //  站点配置
@@ -277,12 +282,8 @@
         };
       }
     }
-    return {
-      name: document.title || 'AI Chat',
-      contentFocused: false,
-      contentSelectors: [],
-      selectors: GENERIC_SELECTORS
-    };
+    // ✨ v1.1.4: 未知站点返回 null 而不是默认配置，让上层可以提前退出
+    return null;
   }
 
   function queryFirst(selectors, root) {
@@ -380,18 +381,22 @@
   }
 
   /**
-   * 判断标签页是否处于"后台"状态（不可见）
+   * 判断标签页是否"未聚焦"（应该发通知）
    *
-   * ✨ v1.1 修复：使用 document.visibilityState === 'hidden' 而非 document.hasFocus()
+   * ✨ v1.1.4: 语义改为"只要标签页失去焦点就通知"
+   * - 之前用 document.visibilityState === 'hidden'，需要用户切到其他标签页
+   * - 现在用 !document.hasFocus()，只要窗口失焦就发，更符合用户预期
+   * - 包括：切到其他标签页、切到其他应用、点击桌面等
    *
-   * 原因：README 设计意图是"标签页可见时不发送通知"。
-   * - document.hasFocus() 仅在标签页有键盘焦点时为 true
-   * - document.visibilityState === 'hidden' 只在标签页完全不可见时为 true
-   *   （用户切换到了其他标签页，或最小化了窗口）
-   * 后者更贴合"用户去干别的"的真实场景。
+   * 注意：document.hasFocus() 在某些情况下可能不稳定，
+   * 这里同时检查 document.visibilityState 作为兑底。
    */
-  function isTabHidden() {
-    return document.visibilityState === 'hidden';
+  function isTabUnfocused() {
+    // 标签页隐藏（切到其他标签页）→ 未聚焦
+    if (document.visibilityState === 'hidden') return true;
+    // 窗口失去焦点（切到其他应用、点桌面等）→ 未聚焦
+    if (!document.hasFocus()) return true;
+    return false;
   }
 
   // ====================================================================
@@ -400,7 +405,7 @@
 
   class ChatMonitor {
     constructor() {
-      // ✨ 缓存 siteConfig，避免每次 mutation 都重新计算
+      // ✨ v1.1.4: siteConfig 可能为 null（未知站点），上层处理
       this.siteConfig = buildSiteConfig();
       this.observer = null;
       this.debounceTimer = null;
@@ -409,7 +414,7 @@
       this.lastText = '';
       this.lastTextSnapshot = '';
       this.lastTextChangeTime = 0;
-      this.snapshotInitialized = false; // ✨ v1.1: 标记快照是否已初始化
+      this.snapshotInitialized = false;
       this.chatContainer = null;
       this.active = false;
       this.retryCount = 0;
@@ -417,8 +422,7 @@
       this.retryDelay = 2000;
       this.initCalled = false;
       this.debounceTime = 1500;
-      this.onlyWhenHidden = true;
-      // ✨ v1.1.1: 诊断信息，可通过 Ctrl+Shift+L 查看
+      this.onlyWhenHidden = true; // ✨ v1.1.4: 语义改为"未聚焦时不发，失去焦点时发"
       this.diagnosticInfo = {
         initTime: Date.now(),
         mutationsReceived: 0,
@@ -436,6 +440,14 @@
     async init() {
       if (this.initCalled) return;
       this.initCalled = true;
+
+      // ✨ v1.1.4: 未知站点提前退出
+      if (!this.siteConfig) {
+        // 静默退出，不打扰非 AI 网站的用户
+        // 但输出一条调试日志便于诊断
+        log('未识别的站点，不启动监控:', location.hostname);
+        return;
+      }
 
       log('正在初始化，站点:', this.siteConfig.name, '内容聚焦:', this.siteConfig.contentFocused);
 
@@ -458,7 +470,9 @@
           log(`聊天容器未找到，第 ${this.retryCount}/${this.maxRetries} 次重试...`);
           setTimeout(() => this.reInit(), this.retryDelay);
         } else {
-          log('使用 document.body 作为回退容器');
+          // ✨ v1.1.4: 重试耗尽时输出警告（不受 DEBUG 控制）
+          warn('聊天容器未找到（重试已耗尽），使用 document.body 作为回退。' +
+            '选择器:', this.siteConfig.selectors.chatArea);
           this.chatContainer = document.body;
           this.startObserving();
         }
@@ -599,9 +613,10 @@
 
           log('[轮询] ✅ 文本已稳定 ' + (elapsed / 1000).toFixed(1) + 's，准备通知');
 
-          // ✨ v1.1 修复：使用 document.hidden 替代 document.hasFocus()
-          if (this.onlyWhenHidden && !isTabHidden()) {
-            log('[轮询] 标签页可见，跳过通知（但更新指纹）');
+          // ✨ v1.1.4: 使用 isTabUnfocused() 替代 isTabHidden()
+          // 语义改为"只要标签页失去焦点就通知"，不再要求标签页完全隐藏
+          if (this.onlyWhenHidden && !isTabUnfocused()) {
+            log('[轮询] 标签页聚焦中，跳过通知（但更新指纹）');
             this.diagnosticInfo.skippedVisible++;
             this.lastTextChangeTime = 0;
             this.lastFingerprint = latestFingerprint;
@@ -623,11 +638,19 @@
      * 用于排查"收不到通知"的问题
      */
     dumpDiagnostics() {
-      const aiMessages = queryAll(this.siteConfig.selectors.aiMsg);
+      const aiMessages = this.siteConfig ? queryAll(this.siteConfig.selectors.aiMsg) : [];
       const chatText = this.chatContainer ? getCleanText(this.chatContainer) : '';
 
       console.group('%c🔔 AI Notify 诊断信息', 'color: #6366f1; font-weight: bold; font-size: 14px;');
-      console.log('站点:', this.siteConfig.name);
+      console.log('当前 URL:', window.location.href);
+      console.log('当前 hostname:', window.location.hostname);
+      console.log('站点配置:', this.siteConfig ? this.siteConfig.name : 'null（未识别站点）');
+      if (!this.siteConfig) {
+        console.warn('⚠️ 当前站点未识别！content.js 不会启动监控。');
+        console.log('提示：检查 content.js 中 SITE_PATTERNS 是否包含当前 hostname');
+        console.groupEnd();
+        return;
+      }
       console.log('内容聚焦模式:', this.siteConfig.contentFocused);
       console.log('内容选择器:', this.siteConfig.contentSelectors);
       console.log('AI 消息选择器:', this.siteConfig.selectors.aiMsg);
@@ -849,8 +872,9 @@
       if (latestText.length < 2) { log('消息内容过短，跳过'); return; }
 
       // ✨ v1.1 修复：使用 document.hidden 替代 document.hasFocus()
-      if (this.onlyWhenHidden && !isTabHidden()) {
-        log('标签页可见，跳过通知（更新指纹）');
+      // ✨ v1.1.4: 使用 isTabUnfocused() 替代 isTabHidden()
+      if (this.onlyWhenHidden && !isTabUnfocused()) {
+        log('标签页聚焦中，跳过通知（更新指纹）');
         this.lastFingerprint = latestFingerprint;
         this.lastText = latestText;
         return;

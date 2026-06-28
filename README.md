@@ -4,6 +4,19 @@
 
 ## 更新日志
 
+### v1.1.4（解决 content script 不注入 + 改为失焦即通知）
+
+**用户反馈**：截图显示 F12 Console 里**完全没有 `[🔔 AI Notify]` 开头的日志**，只有 Z.AI 自身的 Svelte 日志。这说明 content script 根本没注入到页面。
+
+**根本原因**：manifest 的 `matches` 规则只匹配了 `https://z.ai/*` 等具体 URL，但 Z.AI 实际的聊天 URL 可能是 `chat.z.ai` 之外的其他形式（比如带 share 路径、或重定向到其他子域），导致规则没匹配上，content script 完全不加载。
+
+**修复**：
+
+1. **manifest `matches` 改为 `<all_urls>`** —— content.js 在所有网站都加载，但在 `buildSiteConfig()` 中识别站点，非 AI 站点直接退出（不打扰普通网页浏览）。
+2. **启动时立即输出醒目日志**（不受 DEBUG 控制）—— 在 F12 Console 中会看到一条紫色高亮的 `[🔔 AI Notify] Content script 已加载于 https://...`，可立刻确认注入是否成功。
+3. **"仅后台通知"改为"失焦时通知"** —— 按用户要求，只要标签页失去焦点（切到其他标签页、切到其他应用、点桌面等）就发通知，不再要求标签页完全隐藏。判定逻辑改为 `document.visibilityState === 'hidden' || !document.hasFocus()`。
+4. **未知站点提前退出时输出调试日志** + **重试耗尽时输出警告**（不受 DEBUG 控制），便于诊断。
+
 ### v1.1.3（彻底重构检测策略）
 
 **问题**：v1.1.2 删除了 `[class*="cursor"]` 后仍有问题。诊断日志显示 `[class*="streaming"]` 等其他选择器在 React/Tailwind 应用中同样误匹配，导致 `[轮询] 仍有流式指示器，等待` 无限循环。F12 Console 被频满刷屏。
