@@ -2,6 +2,28 @@
 
 > 当 AI 对话回复完成时，发送浏览器通知 —— 让你即使切换到其他标签页也能及时知道回复已就绪。
 
+## 更新日志
+
+### v1.1.0（修复版）
+
+修复了多个导致通知不工作的问题：
+
+1. **`manifest.json` 缺少 `tabs` 权限** —— 通知点击后无法激活聊天标签页。已添加 `tabs` 权限。
+2. **MV3 Service Worker 终止导致通知点击失效** —— 原先将 tab↔notification 映射保存在内存 Map 中，SW 被回收后映射丢失。现在将 tabId 直接编码进 notificationId，即使 SW 重启也能恢复映射。
+3. **`queryAll` 返回顺序错误** —— 原实现按选择器分组返回，`aiMessages[length-1]` 不是文档中真正的"最新"消息。改为合并选择器后用 `querySelectorAll` 一次取回（浏览器原生按文档顺序返回）。
+4. **页面加载/SPA 导航时误触发通知** —— 首次轮询将已有 AI 消息误判为"文本变化"，导致页面打开就收到旧消息的通知。新增 `snapshotInitialized` 标记，首次轮询只初始化快照，不视为变化。
+5. **`document.hasFocus()` 语义错误** —— README 设计意图是"标签页可见时不通知"，但 `hasFocus()` 仅在标签页有键盘焦点时为 true。改为 `document.visibilityState === 'hidden'`，更贴合"用户切换到其他标签页"的真实场景。
+6. **最小文本长度阈值过高** —— 原为 10 字符，导致短回复（"好的"、"完成"）无法触发通知。降低为 2 字符。
+7. **`getSiteConfig()` 重复调用** —— 每次 mutation 都重新计算站点配置。改为实例化时缓存一次。
+8. **URL 监听性能优化** —— 原先对整个 body 注册 MutationObserver 监听 URL 变化。改为拦截 `history.pushState/replaceState` + `popstate` + `hashchange` 事件。
+9. **新增测试通知按钮** —— Popup 中可一键验证通知权限是否正常工作。
+
+### v1.0.0
+
+- 初版发布
+- 内容聚焦模式（contentFocused）
+- 支持 Z.AI、ChatGPT、Claude、Gemini、Kimi、MiniMax、DeepSeek
+
 ## 为什么需要这个扩展？
 
 在使用 AI 对话工具（如 Z.AI、ChatGPT、Claude 等）时，AI 的回复通常需要几秒到几十秒。如果你在等待期间切换到其他标签页处理别的事情，很难知道 AI 什么时候回复完毕。

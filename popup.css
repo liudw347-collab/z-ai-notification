@@ -246,6 +246,46 @@ input[type="range"]::-moz-range-thumb {
   box-shadow: 0 1px 4px rgba(99, 102, 241, 0.3);
 }
 
+/* ====== 测试按钮 ====== */
+.test-btn {
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  color: white;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: opacity 0.15s ease, transform 0.1s ease;
+  font-family: inherit;
+}
+
+.test-btn:hover:not(:disabled) {
+  opacity: 0.92;
+}
+
+.test-btn:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.test-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.test-hint {
+  margin-top: 6px;
+  font-size: 11px;
+  color: #9ca3af;
+  text-align: center;
+  line-height: 1.4;
+}
+
 /* ====== 底部 ====== */
 .footer {
   margin-top: 14px;

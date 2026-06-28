@@ -23,6 +23,8 @@ const debounceSlider = document.getElementById('debounceSlider');
 const debounceValue = document.getElementById('debounceValue');
 const debounceDesc = document.getElementById('debounceDesc');
 const siteList = document.getElementById('siteList');
+const testBtn = document.getElementById('testBtn');
+const testHint = document.getElementById('testHint');
 
 let currentSettings = null;
 
@@ -141,6 +143,33 @@ function bindEvents() {
     currentSettings.sites[siteKey] = enabled;
     saveSettings(currentSettings);
   });
+
+  // 测试通知按钮
+  if (testBtn) {
+    testBtn.addEventListener('click', sendTestNotification);
+  }
+}
+
+// ====== 发送测试通知 ======
+async function sendTestNotification() {
+  testBtn.disabled = true;
+  testHint.textContent = '正在发送测试通知...';
+
+  try {
+    await new Promise((resolve) => {
+      chrome.runtime.sendMessage({ type: 'TEST_NOTIFICATION' }, () => {
+        resolve();
+      });
+    });
+    testHint.textContent = '✓ 测试通知已发送，如果没看到请检查系统通知权限';
+  } catch (e) {
+    testHint.textContent = '✗ 发送失败：' + (e.message || '未知错误');
+  } finally {
+    setTimeout(() => {
+      testBtn.disabled = false;
+      testHint.textContent = '用于验证通知权限是否正常工作';
+    }, 3000);
+  }
 }
 
 // ====== 更新防抖时间显示 ======

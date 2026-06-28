@@ -1,9 +1,19 @@
 /**
  * AI Chat Notification - Content Script
- * 
+ *
  * 核心检测引擎：通过 MutationObserver + 防抖策略检测 AI 回复完成。
- * 
- * v1.1 改进 —— 内容聚焦模式（contentFocused）：
+ *
+ * v1.1 改进（修复版）：
+ *   1. 修复 queryAll 返回顺序问题 —— 改为按文档顺序返回所有匹配元素，
+ *      这样 aiMessages[length-1] 才是真正的"最新" AI 消息。
+ *   2. 修复页面加载/SPA 导航时对已有 AI 消息误触发通知的问题 ——
+ *      首次轮询只初始化快照，不视为"文本变化"。
+ *   3. 修正"仅后台通知"判定 —— 使用 document.visibilityState === 'hidden'
+ *      替代 document.hasFocus()，更贴合"标签页可见时不通知"的语义。
+ *   4. 缓存 siteConfig，避免每次 mutation 都重新计算。
+ *   5. 降低最小文本长度阈值，避免短回复（"好的"、"完成"）无法触发通知。
+ *
+ * v1.0 改进 —— 内容聚焦模式（contentFocused）：
  *   旧方案：监听整个消息容器的所有 DOM 变化 → UI 渲染（按钮、卡片、动画）
  *         会持续重置防抖计时器，导致通知过晚
  *   新方案：只追踪 AI 文本输出区域（如 .markdown-prose）的内容变化，
@@ -39,7 +49,6 @@
         aiMsg: [
           '.markdown-prose',
           '[id^="response-content-container"]',
-          '.regenerate-response-button',
           '[class*="assistant"]',
           '[data-role="assistant"]'
         ],
@@ -48,7 +57,6 @@
           '[class*="cursor"]',
           '[class*="typing"]',
           '[class*="streaming"]',
-          '[class*="loading"]',
           '[class*="pulse"]'
         ],
         inputArea: [
@@ -231,7 +239,6 @@
     streaming: [
       '[class*="cursor"]',
       '[class*="typing"]',
-      '[class*="loading"]',
       '[class*="streaming"]'
     ],
     inputArea: [
@@ -246,7 +253,7 @@
   //  工具函数
   // ====================================================================
 
-  function getSiteConfig() {
+  function buildSiteConfig() {
     const hostname = window.location.hostname;
     for (const pattern of SITE_PATTERNS) {
       if (pattern.match.test(hostname)) {
@@ -258,7 +265,12 @@
         };
       }
     }
-    return { name: document.title || 'AI Chat', contentFocused: false, contentSelectors: [], selectors: GENERIC_SELECTORS };
+    return {
+      name: document.title || 'AI Chat',
+      contentFocused: false,
+      contentSelectors: [],
+      selectors: GENERIC_SELECTORS
+    };
   }
 
   function queryFirst(selectors, root) {
@@ -272,40 +284,67 @@
     return null;
   }
 
+  /**
+   * ✨ v1.1 修复：按文档顺序返回所有匹配元素
+   *
+   * 旧实现按"选择器顺序"返回元素，导致 aiMessages[length-1] 不是文档中
+   * 最后一个 AI 消息，而是最后一个选择器匹配的最后一个元素。
+   *
+   * 新实现合并所有选择器为单个 querySelectorAll 调用，浏览器原生按文档顺序返回，
+   * 自然去重。这样 aiMessages[length-1] 才是真正的"最新" AI 消息。
+   */
   function queryAll(selectors, root) {
     root = root || document;
-    const seen = new Set();
-    const results = [];
-    for (const sel of selectors) {
-      try {
-        const els = root.querySelectorAll(sel);
-        for (const el of els) {
-          if (!seen.has(el)) {
-            seen.add(el);
-            results.push(el);
+    if (!selectors || selectors.length === 0) return [];
+
+    // 合并所有选择器为逗号分隔的单一选择器
+    // querySelectorAll 原生返回文档顺序、自动去重
+    const combined = selectors.join(', ');
+    try {
+      return Array.from(root.querySelectorAll(combined));
+    } catch (e) {
+      // 某些选择器可能无效，退回到逐个查询
+      const seen = new Set();
+      const results = [];
+      for (const sel of selectors) {
+        try {
+          const els = root.querySelectorAll(sel);
+          for (const el of els) {
+            if (!seen.has(el)) {
+              seen.add(el);
+              results.push(el);
+            }
           }
-        }
-      } catch (e) { /* skip */ }
+        } catch { /* skip */ }
+      }
+      // 手动按文档位置排序
+      results.sort((a, b) => {
+        if (a === b) return 0;
+        const pos = a.compareDocumentPosition(b);
+        if (pos & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
+        if (pos & Node.DOCUMENT_POSITION_PRECEDING) return 1;
+        return 0;
+      });
+      return results;
     }
-    return results;
   }
 
-  function isInsideInput(el) {
+  function isInsideInput(el, inputSelectors) {
     if (!el) return false;
-    const config = getSiteConfig();
-    const inputSelectors = config.selectors.inputArea.join(', ');
+    const combined = inputSelectors.join(', ');
     try {
-      return !!el.closest(inputSelectors);
+      return !!el.closest(combined);
     } catch {
       return false;
     }
   }
 
-  function hasStreamingIndicator(el) {
+  function hasStreamingIndicator(el, streamingSelectors) {
     if (!el) return false;
-    const config = getSiteConfig();
-    for (const sel of config.selectors.streaming) {
+    for (const sel of streamingSelectors) {
       try {
+        // 既检查后代，也检查元素自身
+        if (el.matches?.(sel)) return true;
         if (el.querySelector(sel)) return true;
       } catch { /* skip */ }
     }
@@ -326,13 +365,29 @@
     return 'text:' + text.substring(0, 100);
   }
 
+  /**
+   * 判断标签页是否处于"后台"状态（不可见）
+   *
+   * ✨ v1.1 修复：使用 document.visibilityState === 'hidden' 而非 document.hasFocus()
+   *
+   * 原因：README 设计意图是"标签页可见时不发送通知"。
+   * - document.hasFocus() 仅在标签页有键盘焦点时为 true
+   * - document.visibilityState === 'hidden' 只在标签页完全不可见时为 true
+   *   （用户切换到了其他标签页，或最小化了窗口）
+   * 后者更贴合"用户去干别的"的真实场景。
+   */
+  function isTabHidden() {
+    return document.visibilityState === 'hidden';
+  }
+
   // ====================================================================
-  //  聊天监控器 v1.1 —— 支持内容聚焦模式
+  //  聊天监控器 v1.1 —— 支持内容聚焦模式 + 修复多项 bug
   // ====================================================================
 
   class ChatMonitor {
     constructor() {
-      this.siteConfig = getSiteConfig();
+      // ✨ 缓存 siteConfig，避免每次 mutation 都重新计算
+      this.siteConfig = buildSiteConfig();
       this.observer = null;
       this.debounceTimer = null;
       this.textPollingTimer = null;
@@ -340,12 +395,15 @@
       this.lastText = '';
       this.lastTextSnapshot = '';
       this.lastTextChangeTime = 0;
+      this.snapshotInitialized = false; // ✨ v1.1: 标记快照是否已初始化
       this.chatContainer = null;
       this.active = false;
       this.retryCount = 0;
       this.maxRetries = 15;
       this.retryDelay = 2000;
       this.initCalled = false;
+      this.debounceTime = 1500;
+      this.onlyWhenHidden = true;
     }
 
     async init() {
@@ -390,6 +448,7 @@
       this.lastText = '';
       this.lastTextSnapshot = '';
       this.lastTextChangeTime = 0;
+      this.snapshotInitialized = false; // ✨ 重置初始化标记
       this.init();
     }
 
@@ -445,10 +504,22 @@
       const aiMessages = queryAll(this.siteConfig.selectors.aiMsg);
       if (aiMessages.length === 0) return;
 
+      // ✨ v1.1 修复：queryAll 现在按文档顺序返回，最后一个才是真正的"最新"消息
       const latestMsg = aiMessages[aiMessages.length - 1];
       const currentText = getCleanText(latestMsg);
 
-      if (currentText.length < 10) return;
+      // ✨ v1.1 修复：首次轮询只初始化快照，不视为"文本变化"
+      // 避免页面加载/SPA 导航后对已有的 AI 消息误触发通知
+      if (!this.snapshotInitialized) {
+        this.lastTextSnapshot = currentText;
+        this.snapshotInitialized = true;
+        this.lastTextChangeTime = 0; // 0 表示还未检测到任何变化
+        log('[轮询] 初始化快照，文本长度:', currentText.length);
+        return;
+      }
+
+      // 文本过短则跳过（降低阈值以支持短回复，如"好的"、"完成"）
+      if (currentText.length < 2) return;
 
       // 检测文本是否有变化
       if (currentText !== this.lastTextSnapshot) {
@@ -458,8 +529,12 @@
         log('[轮询] 检测到文本变化，长度:', currentText.length);
       } else {
         // 文本没变 → 检查是否已经稳定了足够久
+        // 注意：lastTextChangeTime === 0 表示从未检测到变化（页面加载后文本就稳定）
+        //       此时不应该触发通知
+        if (this.lastTextChangeTime === 0) return;
+
         const elapsed = Date.now() - this.lastTextChangeTime;
-        if (this.lastTextChangeTime > 0 && elapsed >= this.debounceTime) {
+        if (elapsed >= this.debounceTime) {
           // 文本已稳定！但还需要确认不是和上次通知同一条
           const latestFingerprint = getElementFingerprint(latestMsg);
           if (latestFingerprint === this.lastFingerprint && currentText === this.lastText) {
@@ -467,21 +542,25 @@
           }
 
           // 检查流式指示器
-          if (hasStreamingIndicator(latestMsg)) {
+          if (hasStreamingIndicator(latestMsg, this.siteConfig.selectors.streaming)) {
             log('[轮询] 仍有流式指示器，等待');
             return;
           }
 
           log('[轮询] ✅ 文本已稳定 ' + (elapsed / 1000).toFixed(1) + 's，准备通知');
-          this.lastTextChangeTime = 0; // 防止重复触发
-          this.lastFingerprint = latestFingerprint;
-          this.lastText = currentText;
 
-          if (this.onlyWhenHidden && document.hasFocus()) {
-            log('[轮询] 标签页激活，跳过通知（但更新指纹）');
+          // ✨ v1.1 修复：使用 document.hidden 替代 document.hasFocus()
+          if (this.onlyWhenHidden && !isTabHidden()) {
+            log('[轮询] 标签页可见，跳过通知（但更新指纹）');
+            this.lastTextChangeTime = 0;
+            this.lastFingerprint = latestFingerprint;
+            this.lastText = currentText;
             return;
           }
 
+          this.lastTextChangeTime = 0; // 防止重复触发
+          this.lastFingerprint = latestFingerprint;
+          this.lastText = currentText;
           this.sendNotification(currentText);
         }
       }
@@ -506,11 +585,6 @@
 
     /**
      * 判断是否为有意义的 DOM 变化
-     * 
-     * ✨ 内容聚焦模式下：
-     *   - 只有在 AI 文本输出区域（.markdown-prose 等）内的变化才算有意义
-     *   - 按钮、卡片、动画等外围 UI 的变化被忽略
-     *   - 这样 AI 文字写完后，即使 UI 还在渲染，也能及时通知
      */
     isSignificantMutation(mutation) {
       // === 通用过滤（所有模式共用） ===
@@ -519,11 +593,12 @@
       if (mutation.target && mutation.target.nodeType === Node.ELEMENT_NODE) {
         const tag = mutation.target.tagName;
         if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'LINK') return false;
-        if (isInsideInput(mutation.target)) return false;
+        if (isInsideInput(mutation.target, this.siteConfig.selectors.inputArea)) return false;
       }
 
       // 排除输入区域内的变动
-      if (mutation.target?.parentElement && isInsideInput(mutation.target.parentElement)) {
+      if (mutation.target?.parentElement &&
+          isInsideInput(mutation.target.parentElement, this.siteConfig.selectors.inputArea)) {
         return false;
       }
 
@@ -541,7 +616,8 @@
       }
 
       if (mutation.type === 'characterData') {
-        if (mutation.target.parentElement && isInsideInput(mutation.target.parentElement)) {
+        if (mutation.target.parentElement &&
+            isInsideInput(mutation.target.parentElement, this.siteConfig.selectors.inputArea)) {
           return false;
         }
         return true;
@@ -551,20 +627,11 @@
     }
 
     /**
-     * ✨ 内容聚焦模式下的 mutation 判定
-     * 
-     * 只有以下情况才算"有意义"：
-     * 1. 新增的节点本身是内容区域元素（.markdown-prose）
-     * 2. 新增的节点内包含内容区域元素
-     * 3. 文本变化（characterData）发生在内容区域内
-     * 4. 内容区域内的子节点变化（新段落、代码块等）
-     * 
-     * 其他所有变化（按钮渲染、卡片出现、动画、hover 效果等）→ 忽略
+     * 内容聚焦模式下的 mutation 判定
      */
     isContentAreaMutation(mutation) {
       const contentSelectors = this.siteConfig.contentSelectors;
 
-      // helper: 检查元素是否在内容区域内
       const isInsideContent = (el) => {
         if (!el) return false;
         for (const sel of contentSelectors) {
@@ -575,7 +642,6 @@
         return false;
       };
 
-      // helper: 检查元素本身是否匹配内容选择器
       const isContentElement = (el) => {
         if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
         for (const sel of contentSelectors) {
@@ -586,7 +652,6 @@
         return false;
       };
 
-      // helper: 检查元素内是否包含内容选择器的元素
       const containsContentElement = (el) => {
         if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
         for (const sel of contentSelectors) {
@@ -600,23 +665,16 @@
       // childList 变化：新增节点
       if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
         for (const node of mutation.addedNodes) {
-          // 新增的节点本身就是内容元素（如新的 .markdown-prose）
           if (isContentElement(node)) return true;
-
-          // 新增的节点内包含内容元素
           if (containsContentElement(node)) return true;
-
-          // 新增的节点在内容区域内（如内容区域内的子元素）
           if (isInsideContent(node)) return true;
         }
-        // 新增的节点都不在内容区域 → UI 渲染噪声 → 忽略
         log('[内容聚焦] 忽略非内容区域的 childList 变化');
         return false;
       }
 
       // characterData 变化：文本修改
       if (mutation.type === 'characterData') {
-        // 只关心内容区域内的文本变化
         if (isInsideContent(mutation.target.parentElement)) {
           return true;
         }
@@ -637,6 +695,7 @@
       const aiMessages = queryAll(this.siteConfig.selectors.aiMsg);
       if (aiMessages.length === 0) { log('未找到 AI 消息'); return; }
 
+      // ✨ v1.1 修复：queryAll 现在按文档顺序返回
       const latestMsg = aiMessages[aiMessages.length - 1];
       const latestText = getCleanText(latestMsg);
       const latestFingerprint = getElementFingerprint(latestMsg);
@@ -650,18 +709,18 @@
       }
 
       // 仍在流式输出
-      if (hasStreamingIndicator(latestMsg)) {
+      if (hasStreamingIndicator(latestMsg, this.siteConfig.selectors.streaming)) {
         log('检测到流式输出指示器，等待... (2s 后重试)');
         this.debounceTimer = setTimeout(() => this.checkForCompletedResponse(), 2000);
         return;
       }
 
       // 内容过短
-      if (latestText.length < 10) { log('消息内容过短，跳过'); return; }
+      if (latestText.length < 2) { log('消息内容过短，跳过'); return; }
 
-      // 仅后台通知
-      if (this.onlyWhenHidden && document.hasFocus()) {
-        log('标签页激活，跳过通知（更新指纹）');
+      // ✨ v1.1 修复：使用 document.hidden 替代 document.hasFocus()
+      if (this.onlyWhenHidden && !isTabHidden()) {
+        log('标签页可见，跳过通知（更新指纹）');
         this.lastFingerprint = latestFingerprint;
         this.lastText = latestText;
         return;
@@ -736,8 +795,11 @@
   let monitor = new ChatMonitor();
   monitor.init();
 
+  // ✨ v1.1 改进：使用 history API + popstate 监听 URL 变化，
+  //    避免对整个 body 注册 MutationObserver 造成性能浪费
   let lastUrl = location.href;
-  const urlObserver = new MutationObserver(() => {
+
+  function onUrlChange() {
     if (location.href !== lastUrl) {
       lastUrl = location.href;
       log('URL 变化，重新初始化监控器:', lastUrl);
@@ -745,13 +807,19 @@
       monitor = new ChatMonitor();
       monitor.init();
     }
+  }
+
+  // 拦截 pushState / replaceState
+  ['pushState', 'replaceState'].forEach((method) => {
+    const original = history[method];
+    history[method] = function (...args) {
+      const result = original.apply(this, args);
+      // 异步触发，确保浏览器先处理完 URL 变化
+      setTimeout(onUrlChange, 0);
+      return result;
+    };
   });
 
-  if (document.body) {
-    urlObserver.observe(document.body, { childList: true, subtree: true });
-  } else {
-    document.addEventListener('DOMContentLoaded', () => {
-      urlObserver.observe(document.body, { childList: true, subtree: true });
-    });
-  }
+  window.addEventListener('popstate', onUrlChange);
+  window.addEventListener('hashchange', onUrlChange);
 })();
