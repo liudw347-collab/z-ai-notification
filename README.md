@@ -1,8 +1,38 @@
 # AI Chat Notification 🔔
 
-> 当 AI 对话回复完成时，发送浏览器通知 —— 让你即使切换到其他标签页也能及时知道回复已就绪。
+> 当 Z.AI 对话回复完成时，发送浏览器通知 —— 让你即使切换到其他标签页也能及时知道回复已就绪。
 
 ## 更新日志
+
+### v1.2.0（精简为只支持 Z.AI）
+
+**用户反馈**："如果我平常只在 z.ai 上用，那么保留其他网站的支持是不是会浪费效能"
+
+**优化**：
+
+1. **manifest 的 `matches` 从 `<all_urls>` 改为只匹配 z.ai 域名**
+   - 之前：content.js 在所有网页（百度、GitHub、YouTube...）都注入
+   - 现在：只在 `z.ai`、`*.z.ai`、`chatglm.cn`、`*.chatglm.cn` 注入
+   - 普通网页零开销，不再加载扩展代码
+
+2. **移除其他站点的 SITE_PATTERNS 配置**
+   - 删除 ChatGPT、Claude、Gemini、MiniMax、Kimi、DeepSeek 的配置
+   - content.js 从 1538 行精简到 1301 行
+
+3. **移除 GENERIC_SELECTORS**
+   - 之前用于未知站点的回退，现在 manifest 已限制只注入 z.ai，不再需要
+
+4. **移除 `thinkingIndicators` 和 `isThinkingNow()`**
+   - v1.1.11 已确认这些检查在 z.ai 上有害无益（`thinking-chain-container` 完成后仍保留在 DOM 中），现在彻底删除
+
+5. **关闭 DEBUG 日志**
+   - `const DEBUG = false`，减少 F12 Console 噪音
+   - 排查问题时改为 `true` 即可重新启用
+
+6. **精简 background.js 和 popup.js 的站点列表**
+   - 默认设置、`getSiteKey()`、Popup 站点列表都只保留 z.ai 和 chatglm.cn
+
+**影响**：仅支持 Z.AI（含 chatglm.cn）。如果你将来需要在其他 AI 平台使用，需要重新添加站点配置。
 
 ### v1.1.12（按钮检测可用时关闭文本轮询，避免多步思考重复通知）
 
@@ -309,12 +339,8 @@ MiniMax 等产品已经内置了这个功能，但很多 AI 平台（包括 Z.AI
 | 平台 | 域名 | 状态 |
 |------|------|------|
 | Z.AI | z.ai, chatglm.cn | ✅ 支持 |
-| ChatGPT | chatgpt.com | ✅ 支持 |
-| Claude | claude.ai | ✅ 支持 |
-| Gemini | gemini.google.com | ✅ 支持 |
-| MiniMax | minimax.chat | ✅ 支持 |
-| Kimi | kimi.moonshot.cn | ✅ 支持 |
-| DeepSeek | deepseek.com | ✅ 支持 |
+
+> v1.2.0 起仅支持 Z.AI。如需支持其他平台，请参考早期版本（v1.1.x）的 SITE_PATTERNS 配置。
 
 ## 安装方法
 

@@ -4,15 +4,10 @@
  */
 
 // ====== 站点列表配置 ======
+// ✨ v1.2.0: 精简为只支持 Z.AI
 const SITES = [
   { key: 'z.ai', name: 'Z.AI', domain: 'chat.z.ai' },
-  { key: 'chatglm.cn', name: 'ChatGLM', domain: 'chatglm.cn' },
-  { key: 'chatgpt.com', name: 'ChatGPT', domain: 'chatgpt.com' },
-  { key: 'claude.ai', name: 'Claude', domain: 'claude.ai' },
-  { key: 'gemini.google.com', name: 'Gemini', domain: 'gemini.google.com' },
-  { key: 'minimax.chat', name: 'MiniMax', domain: 'minimax.chat' },
-  { key: 'kimi.moonshot.cn', name: 'Kimi', domain: 'kimi.moonshot.cn' },
-  { key: 'deepseek.com', name: 'DeepSeek', domain: 'deepseek.com' }
+  { key: 'chatglm.cn', name: 'ChatGLM', domain: 'chatglm.cn' }
 ];
 
 // ====== DOM 元素引用 ======

@@ -24,9 +24,9 @@
 (function () {
   'use strict';
 
-  // ✨ v1.1.4: 启动日志不受 DEBUG 控制，总是输出，便于确认注入。
-  // ✨ v1.1.1: 默认开启 DEBUG，方便排查。问题解决后可改回 false。
-  const DEBUG = true;
+  // ✨ v1.2.0: 默认关闭 DEBUG 日志，减少 F12 噪音。
+  //   排查问题时改为 true 即可重新启用详细日志。
+  const DEBUG = false;
   // ✨ v1.1.3: 轮询日志限流，避免 F12 被频满。
   let pollLogCounter = 0;
   const log = (...args) => DEBUG && console.log('[🔔 AI Notify]', ...args);
@@ -48,6 +48,10 @@
   //  站点配置
   // ====================================================================
 
+  // ✨ v1.2.0: 精简为只支持 Z.AI
+  //   移除 ChatGPT/Claude/Gemini/MiniMax/Kimi/DeepSeek 等其他站点配置
+  //   移除 GENERIC_SELECTORS（未知站点回退用，现在 manifest 已限制只注入 z.ai）
+  //   这样代码更精简，加载更快，维护更清晰
   const SITE_PATTERNS = [
     {
       match: /z\.ai|chatglm\.cn/,
@@ -56,52 +60,33 @@
       contentFocused: true,
       // 文本内容区域的 CSS 选择器 —— 只有这些元素内的变化才重置计时器
       contentSelectors: ['.markdown-prose'],
-      // ✨ v1.1.10 实测发现 z.ai 真实机制（与之前文档描述完全不同！）：
+      // ✨ v1.1.10 实测发现 z.ai 真实机制：
       //   - 灰色箭头（disabled=true，class 含 bg-[#E0E0E0]）：空闲，无输入或 AI 已完成
       //   - 黑色箭头（disabled=false，class 含 bg-black/80）：用户输入了消息但未发送
       //   - 按钮消失（#send-message-button 从 DOM 卸载）：AI 正在运行（思考或流式输出）
       //   AI 完成后按钮重新出现，回到 disabled 状态。
       // 关键转换：按钮消失 → 重新出现 = AI 回复完成
       buttonDetection: {
-        // 发送按钮的选择器（按优先级，第一个找到的会用）
-        // ✨ v1.1.8：增加多个回退选择器，应对 z.ai DOM 结构调整
+        // 发送按钮的选择器
         buttonSelector: '#send-message-button, button[type="submit"][aria-label*="send" i], button[aria-label*="发送"], button[data-testid*="send" i]',
-        // ✨ v1.1.10 重大修正：实测发现 z.ai 的真实机制
-        //   z.ai 在 AI 运行时（思考或流式输出），整个 #send-message-button 会从 DOM 卸载！
-        //   不是变成 disabled，也不是变成停止按钮，而是直接消失。
-        //   AI 完成后按钮重新出现，且为 disabled=true（灰色箭头）。
-        //   状态映射：
-        //     按钮消失 (btn === null) → 'running'
-        //     按钮 disabled → 'idle'
-        //     按钮 enabled + 黑色箭头 → 'idle'（用户输入了消息但未发送）
-        //     按钮 enabled + 停止图标 → 'running'（其他站点可能的实现）
-        //
-        // ✨ v1.1.9 保留：思考阶段识别（'thinking'）
+        // 判断按钮状态，返回三态值
         getState: (btn) => {
-          // ✨ v1.1.10 关键：按钮不存在 = z.ai 已卸载按钮 = AI 正在运行
-          // 之前这里返回 'idle'，导致按钮消失时被误判为"空闲"，完全错过开始运行信号
+          // 按钮不存在 = z.ai 已卸载按钮 = AI 正在运行
           if (!btn) return 'running';
-
-          // 1. 显式禁用属性 → 空闲
+          // 显式禁用属性 → 空闲
           if (btn.disabled) return 'idle';
           if (btn.getAttribute('aria-disabled') === 'true') return 'idle';
 
-          // 2. 收集所有可用于判定的文本信号
+          // aria-label/title 信号
           const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
           const title = (btn.getAttribute('title') || '').toLowerCase();
           const dataTestId = (btn.getAttribute('data-testid') || '').toLowerCase();
           const signals = ariaLabel + ' ' + title + ' ' + dataTestId;
 
-          // 3. aria-label/title 含停止语义 → 运行中（最可靠）
-          if (/stop|pause|abort|cancel|停止|中断|取消/.test(signals)) {
-            return 'running';
-          }
-          // 4. aria-label/title 含发送语义 → 空闲（输入未发送）
-          if (/send|submit|发送|提交/.test(signals)) {
-            return 'idle';
-          }
+          if (/stop|pause|abort|cancel|停止|中断|取消/.test(signals)) return 'running';
+          if (/send|submit|发送|提交/.test(signals)) return 'idle';
 
-          // 5. data-state / data-loading 等显式状态属性
+          // data-state / data-loading 等显式状态属性
           const dataState = (btn.getAttribute('data-state') || '').toLowerCase();
           if (dataState === 'loading' || dataState === 'running') return 'running';
           if (dataState === 'thinking' || dataState === 'reasoning') return 'thinking';
@@ -110,7 +95,7 @@
           if (btn.getAttribute('data-streaming') === 'true') return 'running';
           if (btn.getAttribute('data-thinking') === 'true') return 'thinking';
 
-          // 6. SVG 图标特征
+          // SVG 图标特征
           const svg = btn.querySelector('svg');
           if (svg) {
             const svgClass = (svg.className && svg.className.baseVal !== undefined
@@ -119,37 +104,16 @@
             if (/stop|pause|abort|square/.test(svgClass)) return 'running';
             if (/send|arrow|submit/.test(svgClass)) return 'idle';
 
-            // 检查 SVG 内部：停止图标常见 rect 元素，箭头图标常见 path 元素
             const hasRect = !!svg.querySelector('rect');
             const hasPath = !!svg.querySelector('path');
-            // 停止图标 = rect（实心方块）
             if (hasRect && !hasPath) return 'running';
-            // 箭头图标 = path（z.ai 输入未发送状态就是箭头 path）
             if (hasPath && !hasRect) return 'idle';
           }
 
-          // 7. ✨ v1.1.10 修正兜底逻辑
-          // 之前用 /bg-black/i 兜底判断 running，但 z.ai 输入未发送时按钮 class 含
-          // 'bg-black/80'，会被误判为 running！实测发现：
-          //   - z.ai 输入未发送：bg-black/80 + 箭头 SVG → 应该是 idle
-          //   - z.ai 运行中：按钮根本不存在（前面 if (!btn) 已处理）
-          // 所以兜底分支无需再判断 bg-black，默认返回 idle 即可
-          // 只有在其他站点（按钮不消失但变样式）时可能需要扩展
+          // 兜底：默认空闲（z.ai 运行中按钮会消失，前面已处理）
           return 'idle';
         }
       },
-      // ✨ v1.1.9：思考阶段识别选择器
-      // 这些选择器匹配 z.ai 等站点在 AI 思考时显示的 UI 元素
-      // 思考阶段不视为"回复完成"，避免在思考结束时误触发通知
-      thinkingIndicators: [
-        '#loading-message',
-        '[class*="thinking"]',
-        '[class*="reasoning"]',
-        '[class*=" contemplating"]',
-        '[data-state="thinking"]',
-        '[data-state="reasoning"]',
-        '[data-thinking="true"]'
-      ],
       selectors: {
         chatArea: [
           '#messages-container',
@@ -179,187 +143,8 @@
           '[role="textbox"]'
         ]
       }
-    },
-    {
-      match: /chatgpt\.com|chat\.openai\.com/,
-      name: 'ChatGPT',
-      contentFocused: false,
-      selectors: {
-        chatArea: [
-          '[data-testid="conversation-turn-"]',
-          '[class*="conversation"]',
-          'main'
-        ],
-        aiMsg: [
-          '[data-message-author-role="assistant"]',
-          '[class*="assistant"]'
-        ],
-        streaming: [
-          '[class*="result-streaming"]',
-          '[class*="typing-indicator"]'
-        ],
-        inputArea: [
-          '#prompt-textarea',
-          '[contenteditable="true"]',
-          '[role="textbox"]'
-        ]
-      }
-    },
-    {
-      match: /claude\.ai/,
-      name: 'Claude',
-      contentFocused: false,
-      selectors: {
-        chatArea: [
-          '[class*="flex flex-col gap-"]',
-          '[class*="conversation"]',
-          'main'
-        ],
-        aiMsg: [
-          '[class*="Assistant"]',
-          '[data-testid="assistant-turn"]'
-        ],
-        streaming: [
-          '[class*="typing-indicator"]',
-          '[class*="cursor-blink"]'
-        ],
-        inputArea: [
-          '[contenteditable="true"]',
-          'div[role="textbox"]'
-        ]
-      }
-    },
-    {
-      match: /gemini\.google\.com/,
-      name: 'Gemini',
-      contentFocused: false,
-      selectors: {
-        chatArea: [
-          '[class*="conversation-container"]',
-          '.response-container',
-          'main'
-        ],
-        aiMsg: [
-          'model-response',
-          '[class*="response"]'
-        ],
-        streaming: [
-          '[class*="streaming"]',
-          '.loading-dots'
-        ],
-        inputArea: [
-          '[contenteditable="true"]',
-          'rich-textarea'
-        ]
-      }
-    },
-    {
-      match: /minimax\.chat/,
-      name: 'MiniMax',
-      contentFocused: false,
-      selectors: {
-        chatArea: [
-          '.chat-messages',
-          '[class*="message-list"]',
-          'main'
-        ],
-        aiMsg: [
-          '[class*="bot"]',
-          '[class*="assistant"]'
-        ],
-        streaming: [
-          '[class*="typing-indicator"]',
-          '[class*="cursor-blink"]'
-        ],
-        inputArea: [
-          'textarea',
-          '[contenteditable="true"]'
-        ]
-      }
-    },
-    {
-      match: /kimi\.moonshot\.cn/,
-      name: 'Kimi',
-      contentFocused: false,
-      selectors: {
-        chatArea: [
-          '[class*="chat"]',
-          '[class*="message"]',
-          'main'
-        ],
-        aiMsg: [
-          '[class*="bot"]',
-          '[class*="assistant"]'
-        ],
-        streaming: [
-          '[class*="typing-indicator"]',
-          '[class*="cursor-blink"]'
-        ],
-        inputArea: [
-          'textarea',
-          '[contenteditable="true"]'
-        ]
-      }
-    },
-    {
-      match: /deepseek\.com/,
-      name: 'DeepSeek',
-      contentFocused: false,
-      selectors: {
-        chatArea: [
-          '[class*="chat"]',
-          '[class*="message"]',
-          '[class*="conversation"]',
-          'main'
-        ],
-        aiMsg: [
-          '[class*="assistant"]',
-          '[class*="bot"]',
-          '[data-role="assistant"]'
-        ],
-        streaming: [
-          '[class*="streaming"]',
-          '[class*="typing-indicator"]',
-          '[class*="cursor-blink"]'
-        ],
-        inputArea: [
-          'textarea',
-          '[contenteditable="true"]',
-          '[role="textbox"]'
-        ]
-      }
     }
   ];
-
-  const GENERIC_SELECTORS = {
-    chatArea: [
-      '[class*="message"]',
-      '[class*="chat"]',
-      '[role="log"]',
-      '[class*="conversation"]',
-      '[class*="thread"]',
-      'main',
-      'body'
-    ],
-    aiMsg: [
-      '[class*="assistant"]',
-      '[class*="bot"]',
-      '[class*="ai"]',
-      '[data-role="assistant"]',
-      '[class*="model"]'
-    ],
-    streaming: [
-      '[class*="streaming"]',
-      '[class*="typing-indicator"]',
-      '[class*="loading-dots"]'
-    ],
-    inputArea: [
-      'textarea',
-      '[contenteditable="true"]',
-      '[role="textbox"]',
-      '[class*="input"]'
-    ]
-  };
 
   // ====================================================================
   //  工具函数
@@ -374,13 +159,10 @@
           contentFocused: pattern.contentFocused || false,
           contentSelectors: pattern.contentSelectors || [],
           buttonDetection: pattern.buttonDetection || null,
-          // ✨ v1.1.9：思考阶段指示器，用于文本轮询时识别"思考中"状态
-          thinkingIndicators: pattern.thinkingIndicators || [],
           selectors: pattern.selectors
         };
       }
     }
-    // ✨ v1.1.4: 未知站点返回 null 而不是默认配置，让上层可以提前退出
     return null;
   }
 
@@ -957,21 +739,6 @@
     }
 
     /**
-     * ✨ v1.1.9: 检测页面是否仍在思考阶段
-     * 通过 thinkingIndicators 选择器判断
-     */
-    isThinkingNow() {
-      const indicators = this.siteConfig.thinkingIndicators || [];
-      if (indicators.length === 0) return false;
-      for (const sel of indicators) {
-        try {
-          if (document.querySelector(sel)) return true;
-        } catch { /* skip */ }
-      }
-      return false;
-    }
-
-    /**
      * ✨ v1.1.9: 二次确认完成 —— 按钮空闲 200ms 后再次检查
      * ✨ v1.1.11: 移除 isThinkingNow() 检查（z.ai 的 thinking-chain-container
      *   在 AI 完成后仍保留在 DOM 中，会导致二次确认永远失败）
@@ -1458,11 +1225,8 @@
     }
 
     findSiteKey(hostname) {
-      const knownKeys = [
-        'z.ai', 'chatglm.cn', 'chatgpt.com', 'chat.openai.com',
-        'claude.ai', 'gemini.google.com', 'minimax.chat',
-        'kimi.moonshot.cn', 'deepseek.com', 'chat.deepseek.com'
-      ];
+      // ✨ v1.2.0: 精简为只支持 z.ai
+      const knownKeys = ['z.ai', 'chatglm.cn'];
       return knownKeys.find((key) => hostname.includes(key)) || null;
     }
 

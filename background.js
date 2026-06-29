@@ -10,6 +10,7 @@
  */
 
 // ====== 默认设置 ======
+// ✨ v1.2.0: 精简为只支持 Z.AI
 const DEFAULT_SETTINGS = {
   enabled: true,
   sound: true,
@@ -17,15 +18,7 @@ const DEFAULT_SETTINGS = {
   onlyNotifyWhenHidden: true,
   sites: {
     'z.ai': true,
-    'chatglm.cn': true,
-    'chatgpt.com': true,
-    'chat.openai.com': true,
-    'claude.ai': true,
-    'gemini.google.com': true,
-    'minimax.chat': true,
-    'kimi.moonshot.cn': true,
-    'deepseek.com': true,
-    'chat.deepseek.com': true
+    'chatglm.cn': true
   }
 };
 
@@ -188,19 +181,8 @@ function getSiteKey(url) {
   if (!url) return null;
   try {
     const hostname = new URL(url).hostname.replace(/^www\./, '');
-    const knownKeys = [
-      'chat.deepseek.com',
-      'deepseek.com',
-      'kimi.moonshot.cn',
-      'minimax.chat',
-      'gemini.google.com',
-      'claude.ai',
-      'chat.openai.com',
-      'chatgpt.com',
-      'chatglm.cn',
-      'z.ai'
-    ];
-    // 优先精确匹配，再退回到 includes 匹配
+    // ✨ v1.2.0: 精简为只支持 z.ai
+    const knownKeys = ['chatglm.cn', 'z.ai'];
     if (knownKeys.includes(hostname)) return hostname;
     return knownKeys.find((key) => hostname.endsWith(key) || hostname.includes(key)) || null;
   } catch {
