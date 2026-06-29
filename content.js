@@ -719,10 +719,16 @@
         this.startButtonMonitoring();
       }
 
-      // ✨ 内容聚焦模式下，启动文本轮询作为辅助检测
-      // 每 500ms 采样最新 AI 消息的文本，独立于 DOM mutation 判断
-      if (this.siteConfig.contentFocused) {
+      // ✨ v1.1.12: 按钮检测已是主路径且更可靠，文本轮询在多步思考场景下
+      // 会误触发多次通知（每段思考/输出文本稳定 1.5s 都会发一次）。
+      // 现在按钮检测可用时直接关闭文本轮询，避免重复通知。
+      // 文本轮询只在没有 buttonDetection 的站点才启用。
+      const useTextPolling = !this.siteConfig.buttonDetection && this.siteConfig.contentFocused;
+      if (useTextPolling) {
+        log('未配置按钮检测，启用文本轮询作为兜底');
         this.startTextPolling();
+      } else {
+        log('按钮检测已启用，关闭文本轮询（避免多步思考时重复通知）');
       }
 
       this.active = true;
