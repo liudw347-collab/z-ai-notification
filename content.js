@@ -56,23 +56,31 @@
       contentFocused: true,
       // 文本内容区域的 CSS 选择器 —— 只有这些元素内的变化才重置计时器
       contentSelectors: ['.markdown-prose'],
-      // ✨ v1.1.7: 按钮状态检测配置
-      // Z.AI 的发送按钮有三种状态，可以精确判断 AI 是否在运行：
-      //   - 灰色箭头（disabled=true）：空闲，无输入或 AI 已完成
-      //   - 黑色箭头（disabled=false, class 含 bg-black）：有输入未发送
-      //   - 黑色方块（disabled=false, 停止图标）：AI 正在运行
-      // 当按钮从"黑色"状态变回"disabled"状态时，就是 AI 回复完成的瞬间
+      // ✨ v1.1.10 实测发现 z.ai 真实机制（与之前文档描述完全不同！）：
+      //   - 灰色箭头（disabled=true，class 含 bg-[#E0E0E0]）：空闲，无输入或 AI 已完成
+      //   - 黑色箭头（disabled=false，class 含 bg-black/80）：用户输入了消息但未发送
+      //   - 按钮消失（#send-message-button 从 DOM 卸载）：AI 正在运行（思考或流式输出）
+      //   AI 完成后按钮重新出现，回到 disabled 状态。
+      // 关键转换：按钮消失 → 重新出现 = AI 回复完成
       buttonDetection: {
         // 发送按钮的选择器（按优先级，第一个找到的会用）
         // ✨ v1.1.8：增加多个回退选择器，应对 z.ai DOM 结构调整
         buttonSelector: '#send-message-button, button[type="submit"][aria-label*="send" i], button[aria-label*="发送"], button[data-testid*="send" i]',
-        // ✨ v1.1.9：判断按钮状态，返回三态值
-        //   - 'running'  : AI 正在生成回复（流式输出中）
-        //   - 'thinking' : AI 正在思考（reasoning 阶段，还未开始输出正文）
-        //   - 'idle'     : 空闲，未运行
-        // 思考阶段也视为"未完成"，避免思考结束瞬间误触发通知
+        // ✨ v1.1.10 重大修正：实测发现 z.ai 的真实机制
+        //   z.ai 在 AI 运行时（思考或流式输出），整个 #send-message-button 会从 DOM 卸载！
+        //   不是变成 disabled，也不是变成停止按钮，而是直接消失。
+        //   AI 完成后按钮重新出现，且为 disabled=true（灰色箭头）。
+        //   状态映射：
+        //     按钮消失 (btn === null) → 'running'
+        //     按钮 disabled → 'idle'
+        //     按钮 enabled + 黑色箭头 → 'idle'（用户输入了消息但未发送）
+        //     按钮 enabled + 停止图标 → 'running'（其他站点可能的实现）
+        //
+        // ✨ v1.1.9 保留：思考阶段识别（'thinking'）
         getState: (btn) => {
-          if (!btn) return 'idle';
+          // ✨ v1.1.10 关键：按钮不存在 = z.ai 已卸载按钮 = AI 正在运行
+          // 之前这里返回 'idle'，导致按钮消失时被误判为"空闲"，完全错过开始运行信号
+          if (!btn) return 'running';
 
           // 1. 显式禁用属性 → 空闲
           if (btn.disabled) return 'idle';
@@ -88,7 +96,7 @@
           if (/stop|pause|abort|cancel|停止|中断|取消/.test(signals)) {
             return 'running';
           }
-          // 4. aria-label/title 含发送语义 → 空闲
+          // 4. aria-label/title 含发送语义 → 空闲（输入未发送）
           if (/send|submit|发送|提交/.test(signals)) {
             return 'idle';
           }
@@ -116,18 +124,17 @@
             const hasPath = !!svg.querySelector('path');
             // 停止图标 = rect（实心方块）
             if (hasRect && !hasPath) return 'running';
-            // 箭头图标 = path
+            // 箭头图标 = path（z.ai 输入未发送状态就是箭头 path）
             if (hasPath && !hasRect) return 'idle';
           }
 
-          // 7. 兜底：通过 class 推断（最不可靠，但作为最后防线）
-          const cls = (btn.className || '').toString();
-          // enabled 且有 "黑色背景" 类（z.ai 运行中常见样式）
-          if (/bg-black|bg-neutral-50|bg-neutral-900/i.test(cls)) {
-            // 保守判断为运行中（避免漏通知）
-            return 'running';
-          }
-
+          // 7. ✨ v1.1.10 修正兜底逻辑
+          // 之前用 /bg-black/i 兜底判断 running，但 z.ai 输入未发送时按钮 class 含
+          // 'bg-black/80'，会被误判为 running！实测发现：
+          //   - z.ai 输入未发送：bg-black/80 + 箭头 SVG → 应该是 idle
+          //   - z.ai 运行中：按钮根本不存在（前面 if (!btn) 已处理）
+          // 所以兜底分支无需再判断 bg-black，默认返回 idle 即可
+          // 只有在其他站点（按钮不消失但变样式）时可能需要扩展
           return 'idle';
         }
       },
@@ -559,6 +566,8 @@
       // ✨ v1.1.7: 按钮状态监控
       this.buttonObserver = null;
       this.buttonWasRunning = false;
+      // ✨ v1.1.10: 按钮状态轮询兜底（防止 observer 漏检按钮重新挂载）
+      this.buttonPollingTimer = null;
       // ✨ v1.1.9: 按钮三态值（'running' | 'thinking' | 'idle'），替代旧的 boolean
       this.buttonLastState = 'idle';
       // ✨ v1.1.9: 最小运行时长保护 —— 按钮进入运行/思考状态的时间戳
@@ -669,6 +678,10 @@
         clearTimeout(this.buttonConfirmTimer);
         this.buttonConfirmTimer = null;
       }
+      if (this.buttonPollingTimer) {
+        clearInterval(this.buttonPollingTimer);
+        this.buttonPollingTimer = null;
+      }
       if (this.buttonObserver) { this.buttonObserver.disconnect(); this.buttonObserver = null; }
       // ✨ v1.1.5: SPA 导航时不清空 notifiedFingerprints
       // 因为同一会话内不同 URL 可能仍然引用同一消息
@@ -766,6 +779,8 @@
             break;
           }
           // SVG 图标整体替换（childList 变化）—— 也是状态转换的关键信号
+          // ✨ v1.1.10：z.ai 在 AI 运行时会整个卸载 #send-message-button，
+          // 监听按钮父容器的 childList 才能捕获按钮的"出现/消失"
           if (mutation.type === 'childList' &&
               (mutation.addedNodes.length > 0 || mutation.removedNodes.length > 0)) {
             this.checkButtonStateChange();
@@ -774,17 +789,36 @@
         }
       });
 
-      // 尝试观察按钮，如果按钮还不存在则重试
+      // ✨ v1.1.10 关键修正：不能直接监听按钮本身！
+      //   z.ai 在 AI 运行时会把 #send-message-button 整个从 DOM 卸载，
+      //   一旦按钮消失，observer 就失去了观察目标，再也无法检测到按钮重新出现。
+      //   正确做法：监听按钮的父容器（或更上层的稳定容器），观察 childList 变化
+      //   当父容器的子节点变化时（按钮被卸载或重新挂载），触发状态检查
+      const findButtonParent = (btn) => {
+        if (!btn) return null;
+        // 选择一个相对稳定的父容器（避免选择太靠近的父节点，可能也跟着卸载）
+        // 优先选择 button 的直接父级，再退到 grandparent
+        let parent = btn.parentElement;
+        if (!parent) return null;
+        // 检查父级是否有合理的稳定性（有 id 或 class）
+        if (parent.id || parent.className) return parent;
+        const grandparent = parent.parentElement;
+        return grandparent || parent;
+      };
+
+      // 尝试观察按钮的父容器，如果按钮还不存在则重试
       const tryObserve = (retryCount = 0) => {
         button = findButton();
         if (button) {
-          this.buttonObserver.observe(button, {
+          const target = findButtonParent(button) || button;
+          this.buttonObserver.observe(target, {
             attributes: true,
-            attributeFilter: ['disabled', 'class'],
-            childList: true,  // SVG 图标可能整个被替换
-            subtree: true
+            attributeFilter: ['disabled', 'class', 'aria-disabled'],
+            childList: true,  // ✨ v1.1.10: 监听按钮的添加/移除
+            subtree: true     // ✨ v1.1.10: 按钮内的 SVG 也可能变化
           });
-          log('[按钮监控] 已开始监听发送按钮:', button);
+          log('[按钮监控] 已开始监听（目标:', target.tagName + (target.id ? '#' + target.id : ''),
+              '，按钮:', button.tagName + (button.id ? '#' + button.id : ''), '）');
           // 初始检查一次状态
           this.checkButtonStateChange();
         } else if (retryCount < 30) {
@@ -796,10 +830,23 @@
       };
 
       tryObserve();
+
+      // ✨ v1.1.10: 增加按钮状态轮询作为兜底
+      // MutationObserver 监听父容器，但有些站点的按钮可能在另一个独立子树中
+      // 被替换，导致 childList 变化没被父容器捕获。每 500ms 轮询一次按钮状态
+      // 作为兜底，确保不会错过"运行→空闲"的关键转换。
+      if (this.buttonPollingTimer) clearInterval(this.buttonPollingTimer);
+      this.buttonPollingTimer = setInterval(() => {
+        this.checkButtonStateChange();
+      }, 500);
     }
 
     /**
      * 检查按钮状态变化，如果从"运行中"变为"空闲"，触发通知
+     *
+     * ✨ v1.1.10 重大修正：
+     *   - 移除 `if (!button) return;` 提前退出 —— 按钮消失正是 z.ai 的运行信号！
+     *   - 按钮为 null 时调用 getState(null)，getState 会返回 'running'
      *
      * ✨ v1.1.9 重写：
      *   - 用三态值（'running' | 'thinking' | 'idle'）替代 boolean
@@ -823,9 +870,11 @@
       const config = this.siteConfig.buttonDetection;
       if (!config || !config.getState) return;
 
+      // ✨ v1.1.10 关键修复：不要在按钮消失时直接 return！
+      // z.ai 在 AI 运行时整个按钮会从 DOM 卸载，按钮消失正是开始运行的信号。
+      // 之前的 `if (!button) return;` 完全错过了这个关键转换。
+      // 现在把 null 传给 getState，让它自己决定如何处理（z.ai 的 getState 会返回 'running'）
       const button = document.querySelector(config.buttonSelector);
-      if (!button) return;
-
       const stateNow = config.getState(button);
       const stateBefore = this.buttonLastState;
 
@@ -1434,6 +1483,8 @@
       if (this.buttonObserver) { this.buttonObserver.disconnect(); this.buttonObserver = null; }
       // ✨ v1.1.9: 清理二次确认计时器
       if (this.buttonConfirmTimer) { clearTimeout(this.buttonConfirmTimer); this.buttonConfirmTimer = null; }
+      // ✨ v1.1.10: 清理按钮状态轮询计时器
+      if (this.buttonPollingTimer) { clearInterval(this.buttonPollingTimer); this.buttonPollingTimer = null; }
       this.active = false;
       log('监控器已销毁');
     }

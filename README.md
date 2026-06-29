@@ -4,6 +4,38 @@
 
 ## 更新日志
 
+### v1.1.10（重大修正 —— 实测发现 z.ai 真实按钮机制，与之前假设完全不同）
+
+**用户反馈**："思考时就发了通知" + 提供了完整 F12 Console 日志。
+
+**根本原因定位**：
+
+通过 `agent-browser` 实际访问 z.ai 发送消息，**实测发现 v1.1.7-v1.1.9 文档里描述的按钮机制是错的**！
+
+| 状态 | 之前假设 | 真实情况 |
+|---|---|---|
+| 空闲（无输入） | 灰色箭头，disabled | ✅ 灰色箭头，disabled，class 含 `bg-[#E0E0E0]` |
+| 输入未发送 | 黑色箭头，class 含 `bg-black` | ✅ 黑色箭头，class 含 **`bg-black/80`**（注意是 `/80`）|
+| **AI 运行中** | 按钮变停止图标（黑色方块） | ❌ **整个 `#send-message-button` 从 DOM 卸载！按钮消失！** |
+| 完成 | 按钮变回 disabled | ✅ 按钮重新出现，disabled=true |
+
+**两个致命 bug**：
+
+1. **`getState(null)` 返回 `'idle'`**：按钮消失时 `document.querySelector(buttonSelector)` 返回 `null`，`getState(null)` 之前的实现返回 `'idle'`（认为按钮不存在就是空闲），完全错过了"AI 开始运行"的关键信号。而且 `checkButtonStateChange` 里还有 `if (!button) return;` 提前退出，连检查都不做。
+
+2. **`/bg-black/` 误匹配 `bg-black/80`**：兜底正则 `/bg-black|bg-neutral-50|bg-neutral-900/i` 会匹配到 `bg-black/80`，导致**用户输入消息未发送时**就被误判为"运行中"。然后用户一点发送，按钮变 disabled，从"误判的运行"→"idle"，立刻触发通知 —— **但 AI 才刚开始思考！** 这就是"思考时发通知"的根本原因。
+
+**修复方案**：
+
+1. **`getState(null)` 返回 `'running'`**：按钮消失视为 AI 运行中（z.ai 的真实机制）。
+2. **移除 `checkButtonStateChange` 里的 `if (!button) return;`**：按钮消失时也要执行状态检查。
+3. **删除 `/bg-black/` 兜底分支**：z.ai 输入未发送时的 `bg-black/80` 是合法的 idle 状态，不应被误判为 running。兜底分支现在默认返回 `'idle'`。
+4. **observer 改为监听按钮父容器**：之前直接监听按钮本身，按钮被卸载后 observer 失去目标，再也无法检测到按钮重新出现。现在监听按钮的父容器，通过 childList 变化捕获按钮的"出现/消失"。
+5. **新增按钮状态轮询兜底**：每 500ms 轮询一次按钮状态，防止 MutationObserver 漏检（某些站点的按钮可能在另一个独立子树中被替换）。
+6. **保留 v1.1.9 的所有防护**：最小运行时长（800ms）、延迟二次确认（200ms）、思考指示器检测、三态识别（running/thinking/idle）—— 这些防护对其他站点依然有用。
+
+**验证方法**：通过 `agent-browser` 实测 z.ai 完整对话流程，确认按钮在 AI 运行时确实消失、完成时重新出现。
+
 ### v1.1.9（修复"思考阶段误触发通知"问题）
 
 **用户反馈**："AI 还在思考的时候就发了通知，根本没等回复真正出来。"
