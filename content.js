@@ -780,12 +780,7 @@
         return;
       }
 
-      // 失焦检查
-      if (this.onlyWhenHidden && !isTabUnfocused()) {
-        log('[按钮监控] 标签页聚焦中，跳过通知（但记录指纹）');
-        this.markNotified(fingerprint);
-        return;
-      }
+      // ✨ v1.2.1: 移除失焦检查 —— 无论标签页是否聚焦都发送通知
 
       // 发送通知
       this.markNotified(fingerprint);
@@ -890,17 +885,7 @@
 
           log('[轮询] ✅ 文本已稳定 ' + (elapsed / 1000).toFixed(1) + 's，准备通知');
 
-          // ✨ v1.1.4: 使用 isTabUnfocused() 替代 isTabHidden()
-          if (this.onlyWhenHidden && !isTabUnfocused()) {
-            log('[轮询] 标签页聚焦中，跳过通知（但记录指纹）');
-            this.diagnosticInfo.skippedVisible++;
-            this.lastTextChangeTime = 0;
-            // ✨ v1.1.5: 即使没发通知，也记录指纹，避免用户切走后又重复发
-            this.markNotified(latestFingerprint);
-            this.lastFingerprint = latestFingerprint;
-            this.lastText = currentText;
-            return;
-          }
+          // ✨ v1.2.1: 移除失焦检查 —— 无论标签页是否聚焦都发送通知
 
           this.lastTextChangeTime = 0; // 防止重复触发
           this.lastFingerprint = latestFingerprint;
@@ -1152,15 +1137,7 @@
       // 内容过短
       if (latestText.length < 2) { log('消息内容过短，跳过'); return; }
 
-      // ✨ v1.1.4: 使用 isTabUnfocused() 替代 isTabHidden()
-      if (this.onlyWhenHidden && !isTabUnfocused()) {
-        log('标签页聚焦中，跳过通知（记录指纹）');
-        // ✨ v1.1.5: 即使没发通知，也记录指纹
-        this.markNotified(latestFingerprint);
-        this.lastFingerprint = latestFingerprint;
-        this.lastText = latestText;
-        return;
-      }
+      // ✨ v1.2.1: 移除失焦检查 —— 无论标签页是否聚焦都发送通知
 
       // ✅ 回复完成
       log('✅ AI 回复完成，发送通知！');

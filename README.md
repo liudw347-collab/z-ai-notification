@@ -4,6 +4,20 @@
 
 ## 更新日志
 
+### v1.2.1（移除失焦检查，始终发送通知）
+
+**用户反馈**："改为聚不聚焦都会通知"
+
+**改动**：
+
+1. **移除 3 处失焦检查**：`confirmCompletion()`、`pollLatestAIText()`、`checkForCompletedResponse()` 中的 `if (this.onlyWhenHidden && !isTabUnfocused())` 检查全部移除。无论标签页是否聚焦，AI 回复完成都会发送通知。
+
+2. **移除 Popup 的"失焦时通知"开关**：该开关已无作用，从 popup.html 和 popup.js 中移除。
+
+3. **移除 `onlyNotifyWhenHidden` 设置项**：从 background.js 的 DEFAULT_SETTINGS 中移除。
+
+**影响**：现在即使你正盯着 z.ai 页面看，AI 回复完成时也会收到通知。
+
 ### v1.2.0（精简为只支持 Z.AI）
 
 **用户反馈**："如果我平常只在 z.ai 上用，那么保留其他网站的支持是不是会浪费效能"

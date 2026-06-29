@@ -11,11 +11,11 @@
 
 // ====== 默认设置 ======
 // ✨ v1.2.0: 精简为只支持 Z.AI
+// ✨ v1.2.1: 移除 onlyNotifyWhenHidden（始终通知，不再检查失焦状态）
 const DEFAULT_SETTINGS = {
   enabled: true,
   sound: true,
   debounceTime: 1500,
-  onlyNotifyWhenHidden: true,
   sites: {
     'z.ai': true,
     'chatglm.cn': true

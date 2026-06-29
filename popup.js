@@ -13,7 +13,6 @@ const SITES = [
 // ====== DOM 元素引用 ======
 const masterToggle = document.getElementById('masterToggle');
 const soundToggle = document.getElementById('soundToggle');
-const hiddenOnlyToggle = document.getElementById('hiddenOnlyToggle');
 const debounceSlider = document.getElementById('debounceSlider');
 const debounceValue = document.getElementById('debounceValue');
 const debounceDesc = document.getElementById('debounceDesc');
@@ -40,7 +39,6 @@ function loadSettings() {
           enabled: true,
           sound: true,
           debounceTime: 1500,
-          onlyNotifyWhenHidden: true,
           sites: {}
         }
       );
@@ -86,7 +84,6 @@ function renderSiteList() {
 function applySettingsToUI() {
   masterToggle.checked = currentSettings.enabled !== false;
   soundToggle.checked = currentSettings.sound !== false;
-  hiddenOnlyToggle.checked = currentSettings.onlyNotifyWhenHidden !== false;
   debounceSlider.value = currentSettings.debounceTime || 1500;
   updateDebounceDisplay();
   updateDisabledState();
@@ -104,12 +101,6 @@ function bindEvents() {
   // 提示音开关
   soundToggle.addEventListener('change', () => {
     currentSettings.sound = soundToggle.checked;
-    saveSettings(currentSettings);
-  });
-
-  // 仅后台通知开关
-  hiddenOnlyToggle.addEventListener('change', () => {
-    currentSettings.onlyNotifyWhenHidden = hiddenOnlyToggle.checked;
     saveSettings(currentSettings);
   });
 
