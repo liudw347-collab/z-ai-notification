@@ -152,6 +152,19 @@ function bindEvents() {
 
 // ====== 发送测试通知 ======
 async function sendTestNotification() {
+  // ✨ v1.1.8 修复：测试通知之前不检查全局开关，导致用户关闭主开关后
+  // 测试通知仍能收到，让用户误以为通知功能正常，但实际 AI 回复时收不到。
+  // 现在先检查设置，关闭时给出明确提示。
+  if (currentSettings && currentSettings.enabled === false) {
+    testHint.textContent = '⚠️ 通知已被全局禁用，请先打开上方主开关';
+    testHint.style.color = '#f59e0b';
+    setTimeout(() => {
+      testHint.textContent = '用于验证通知权限是否正常工作';
+      testHint.style.color = '';
+    }, 3000);
+    return;
+  }
+
   testBtn.disabled = true;
   testHint.textContent = '正在发送测试通知...';
 

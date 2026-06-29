@@ -63,35 +63,72 @@
       //   - 黑色方块（disabled=false, 停止图标）：AI 正在运行
       // 当按钮从"黑色"状态变回"disabled"状态时，就是 AI 回复完成的瞬间
       buttonDetection: {
-        // 发送按钮的选择器
-        buttonSelector: '#send-message-button',
+        // 发送按钮的选择器（按优先级，第一个找到的会用）
+        // ✨ v1.1.8：增加多个回退选择器，应对 z.ai DOM 结构调整
+        buttonSelector: '#send-message-button, button[type="submit"][aria-label*="send" i], button[aria-label*="发送"], button[data-testid*="send" i]',
         // 判断按钮是否处于"AI 运行中"状态
-        // 当按钮 enabled（disabled=false）且 class 含 bg-black 时，AI 可能在运行
+        // ✨ v1.1.8 重写：不再硬编码 SVG path 的 '13.3333' 字符串
+        //   改用更稳定的多信号判定：
+        //   1. aria-label / title 含 "停止" / "stop" → 运行中
+        //   2. aria-label / title 含 "发送" / "send" → 非运行中
+        //   3. data-state="loading" / data-loading="true" → 运行中
+        //   4. 含 stop 图标特征（rect 元素或 svg class 含 stop）→ 运行中
+        //   5. enabled 且无上述特征，按 class 颜色推断
         isRunning: (btn) => {
           if (!btn) return false;
-          // disabled 时一定不在运行
+
+          // 1. 显式禁用属性 → 不在运行
           if (btn.disabled) return false;
-          // 检查 class 是否包含黑色背景（运行中或有输入未发送）
-          const cls = btn.className || '';
-          if (cls.includes('bg-black') || cls.includes('bg-neutral-50')) {
-            // 进一步检查 SVG：停止图标 vs 箭头图标
-            // 箭头 path: M8 13.3333V2.66667...
-            // 停止图标通常是矩形 rect 或不同的 path
-            const path = btn.querySelector('path');
-            if (path) {
-              const d = path.getAttribute('d') || '';
-              // 箭头的 path 包含 13.3333（向上的箭头）
-              // 停止图标的 path 不同（通常是矩形或 X）
-              if (d.includes('13.3333')) {
-                // 这是箭头，说明有输入未发送，AI 还没运行
-                return false;
-              }
-              // 不是箭头，是停止图标 → AI 正在运行
-              return true;
-            }
-            // 没有 path，但有黑色背景，保守判断为运行中
+          if (btn.getAttribute('aria-disabled') === 'true') return false;
+
+          // 2. 收集所有可用于判定的文本信号
+          const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
+          const title = (btn.getAttribute('title') || '').toLowerCase();
+          const dataTestId = (btn.getAttribute('data-testid') || '').toLowerCase();
+          const signals = ariaLabel + ' ' + title + ' ' + dataTestId;
+
+          // 3. aria-label/title 含停止语义 → 运行中（最可靠）
+          if (/stop|pause|abort|cancel|停止|中断|取消/.test(signals)) {
             return true;
           }
+          // 4. aria-label/title 含发送语义 → 非运行中
+          if (/send|submit|发送|提交/.test(signals)) {
+            return false;
+          }
+
+          // 5. data-state / data-loading 等显式状态属性
+          const dataState = (btn.getAttribute('data-state') || '').toLowerCase();
+          if (dataState === 'loading' || dataState === 'running') return true;
+          if (dataState === 'idle' || dataState === 'ready') return false;
+          if (btn.getAttribute('data-loading') === 'true') return true;
+          if (btn.getAttribute('data-streaming') === 'true') return true;
+
+          // 6. SVG 图标特征：停止按钮通常是 rect 或两个竖线
+          const svg = btn.querySelector('svg');
+          if (svg) {
+            const svgClass = (svg.className && svg.className.baseVal !== undefined
+              ? svg.className.baseVal
+              : (svg.className || '')).toString().toLowerCase();
+            if (/stop|pause|abort|square/.test(svgClass)) return true;
+            if (/send|arrow|submit/.test(svgClass)) return false;
+
+            // 检查 SVG 内部：停止图标常见 rect 元素，箭头图标常见 path 元素
+            const hasRect = !!svg.querySelector('rect');
+            const hasPath = !!svg.querySelector('path');
+            // 停止图标 = rect（实心方块）
+            if (hasRect && !hasPath) return true;
+            // 箭头图标 = path
+            if (hasPath && !hasRect) return false;
+          }
+
+          // 7. 兜底：通过 class 推断（最不可靠，但作为最后防线）
+          const cls = (btn.className || '').toString();
+          // enabled 且有 "黑色背景" 类（z.ai 运行中常见样式）
+          if (/bg-black|bg-neutral-50|bg-neutral-900/i.test(cls)) {
+            // 保守判断为运行中（避免漏通知）
+            return true;
+          }
+
           return false;
         }
       },
@@ -412,6 +449,18 @@
     return (el.textContent || '').replace(/\s+/g, ' ').trim();
   }
 
+  /**
+   * 获取元素指纹 —— 用于消息去重
+   *
+   * ✨ v1.1.8 修复：之前只用"文本前 200 字"作为兜底指纹，导致 AI 多次回复
+   * 以相同前缀（如"好的，我来帮你..."、"Sure, I can help..."）开头时，
+   * 第二条消息被误判为已通知，直接跳过。
+   *
+   * 新策略（兜底场景）：
+   *   - 文本前 100 字 + 文本总长度 + 文本后 50 字
+   *   - 长度和后缀都参与指纹，前缀相同但内容不同的消息不再被误判
+   *   - 仍保留 id / data-* 等稳定指纹作为最高优先级
+   */
   function getElementFingerprint(el) {
     if (!el) return '';
     // ✨ v1.1.5: 优先使用稳定的 id/data-id，避免 UI 重渲染导致指纹变化
@@ -419,9 +468,15 @@
     const dataId = el.getAttribute('data-id') || el.getAttribute('data-message-id')
       || el.getAttribute('data-turn-id') || el.getAttribute('data-response-id');
     if (dataId) return 'data:' + dataId;
-    // ✨ v1.1.5: 文本指纹从 100 字增加到 200 字，避免长回复前缀相同
+
     const text = getCleanText(el);
-    return 'text:' + text.substring(0, 200);
+    if (!text) return '';
+    // ✨ v1.1.8: 兜底指纹 = 前 100 字 + 长度 + 后 50 字
+    //   只用前缀的话，AI 多次"好的，我来..."开头的回复会全部被误判为同一消息
+    const len = text.length;
+    const prefix = text.substring(0, 100);
+    const suffix = len > 150 ? text.substring(len - 50) : '';
+    return 'text:' + prefix + '|len=' + len + '|tail=' + suffix;
   }
 
   /**
@@ -664,12 +719,21 @@
       let button = findButton();
       this.buttonWasRunning = false;
 
-      // 创建独立的 observer 监听按钮属性变化
+      // ✨ v1.1.8 修复：observer 配置开启了 childList，但回调只处理 attributes。
+      // 如果 z.ai 把停止图标整个 SVG 替换成箭头图标（而不是改 disabled/class），
+      // 关键状态转换会被漏掉，通知永远发不出。现在 childList 变化也触发检查。
       this.buttonObserver = new MutationObserver((mutations) => {
         for (const mutation of mutations) {
           if (mutation.type === 'attributes' &&
               (mutation.attributeName === 'disabled' ||
-               mutation.attributeName === 'class')) {
+               mutation.attributeName === 'class' ||
+               mutation.attributeName === 'aria-disabled')) {
+            this.checkButtonStateChange();
+            break;
+          }
+          // SVG 图标整体替换（childList 变化）—— 也是状态转换的关键信号
+          if (mutation.type === 'childList' &&
+              (mutation.addedNodes.length > 0 || mutation.removedNodes.length > 0)) {
             this.checkButtonStateChange();
             break;
           }
@@ -704,6 +768,18 @@
      * 检查按钮状态变化，如果从"运行中"变为"空闲"，触发通知
      */
     checkButtonStateChange() {
+      // ✨ v1.1.8 修复：扩展重载后旧 content script 的按钮 observer 仍在运行，
+      // 调用 sendMessage 会抛 'Extension context invalidated' 错误刷屏。
+      // 这里加上下文检查，失效时直接停掉 observer。
+      if (!isExtensionContextValid()) {
+        if (this.buttonObserver) {
+          this.buttonObserver.disconnect();
+          this.buttonObserver = null;
+        }
+        warn('[按钮监控] 扩展上下文已失效，停止按钮监听。请刷新页面以加载新版本。');
+        return;
+      }
+
       const config = this.siteConfig.buttonDetection;
       if (!config) return;
 

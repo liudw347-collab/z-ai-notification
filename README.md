@@ -4,6 +4,37 @@
 
 ## 更新日志
 
+### v1.1.8（关键 bug 修复 —— 通知无法触发的多个根本原因）
+
+**用户反馈**："测试通知能收到，但 AI 回复时收不到通知。" 经全面代码审查发现 v1.1.7 引入的按钮状态检测存在多个关键 bug，导致通知触发逻辑失效。
+
+**修复的问题**：
+
+1. **按钮 Observer 漏处理 `childList` 变化（最严重）**
+   - **问题**：v1.1.7 的按钮 observer 配置开启了 `childList: true, subtree: true`（注释里也写了"SVG 图标可能整个被替换"），但回调里**只处理 `attributes` 类型**。如果 z.ai 把"停止图标"整个 SVG 替换成"箭头图标"（而不是改 `disabled` 或 `class`），observer 触发了但回调直接忽略，**关键状态转换被漏掉，通知永远发不出**。
+   - **修复**：回调现在同时响应 `attributes` 和 `childList` 变化，并扩展监听的属性列表（新增 `aria-disabled`）。
+
+2. **`isRunning` 判断过度依赖硬编码 SVG path**
+   - **问题**：v1.1.7 用 `path.getAttribute('d').includes('13.3333')` 判断是否为箭头图标。`13.3333` 是 z.ai 当前箭头 path 里的坐标值，**只要 z.ai 改一次图标设计**，判断就失效。同样 `bg-black`、`bg-neutral-50` 都是 Tailwind 类名，主题调整就会破坏检测。
+   - **修复**：重写为多信号判定，按可靠性优先级：
+     1. `aria-label` / `title` 含停止/发送语义（最可靠）
+     2. `data-state` / `data-loading` / `data-streaming` 显式状态属性
+     3. SVG 内部结构（rect vs path）
+     4. class 颜色推断（兜底）
+   - **回退选择器**：`buttonSelector` 也从单一 `#send-message-button` 扩展为多个回退选择器（按 `aria-label`、`data-testid` 匹配），应对 z.ai DOM 调整。
+
+3. **指纹去重过于激进，会"误吃"新消息**
+   - **问题**：v1.1.5 的兜底指纹只用"文本前 200 字"。AI 经常回复以"好的，我来帮你..."、"Sure, I can help..."开头 —— 两次回复前 200 字完全相同 → 第二次直接被 `isAlreadyNotified` 判定为已通知 → **静默跳过**。
+   - **修复**：兜底指纹改为"前 100 字 + 总长度 + 后 50 字"组合，前缀相同但内容不同的消息不再被误判。
+
+4. **扩展重载后旧按钮 observer 仍会触发错误**
+   - **问题**：v1.1.6 给 `pollLatestAIText` 和 `sendNotification` 加了 `isExtensionContextValid()` 检查，但**按钮 observer 的回调 `checkButtonStateChange` 没有**。扩展重载后旧脚本的按钮 observer 仍在运行，调用 `chrome.runtime.sendMessage` 时抛 `Extension context invalidated` 错误刷屏。
+   - **修复**：`checkButtonStateChange` 开头加上下文检查，失效时直接停掉 observer。
+
+5. **测试通知会"骗"用户**
+   - **问题**：`TEST_NOTIFICATION` 不检查 `settings.enabled`。用户关闭主开关后点测试仍能收到通知，让用户误以为通知功能正常，但实际 AI 回复时收不到，非常困惑。
+   - **修复**：popup.js 的"发送测试通知"按钮先检查主开关，关闭时给出明确提示"通知已被全局禁用，请先打开上方主开关"。
+
 ### v1.1.7（按钮状态检测 —— 即时通知，无需防抖等待）
 
 **用户洞察**：用户观察到 Z.AI 的发送按钮（`#send-message-button`）有三种状态，可以精确判断 AI 是否在运行：
