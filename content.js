@@ -923,17 +923,14 @@
           return;
         }
 
-        // ✨ 检查 2：是否仍在思考阶段（思考指示器还在 DOM 中）
-        // 即使按钮显示空闲，但页面仍有思考指示器，说明思考还没结束
-        if (this.isThinkingNow()) {
-          log('[按钮监控] ⏭️ 检测到思考指示器仍在 DOM 中，思考阶段未结束，忽略按钮空闲信号');
-          this.diagnosticInfo.skippedThinking++;
-          this.buttonLastState = stateNow;
-          this.buttonRunningStartTime = 0;
-          return;
-        }
+        // ✨ v1.1.11 修正：移除 isThinkingNow() 检查
+        // 之前在这里检查思考指示器，但 z.ai 的 thinking-chain-container 在 AI 回复
+        // 完成后仍然保留在 DOM 中（作为可折叠的"Thought Process"面板），
+        // 导致 isThinkingNow() 永远返回 true，通知永远发不出。
+        // v1.1.10 已确认按钮"消失→重新出现且 disabled"是 z.ai 的可靠完成信号，
+        // 不需要额外的思考指示器检查。
 
-        // ✨ 检查 3：延迟二次确认
+        // ✨ 检查 2：延迟二次确认
         // 按钮 idle 后等 200ms 再查一次，避免思考结束、开始流式输出之间的瞬间闪动
         if (this.buttonConfirmTimer) {
           clearTimeout(this.buttonConfirmTimer);
@@ -970,31 +967,24 @@
 
     /**
      * ✨ v1.1.9: 二次确认完成 —— 按钮空闲 200ms 后再次检查
-     * 如果此时按钮仍为 idle 且思考指示器消失，才真正发通知
+     * ✨ v1.1.11: 移除 isThinkingNow() 检查（z.ai 的 thinking-chain-container
+     *   在 AI 完成后仍保留在 DOM 中，会导致二次确认永远失败）
      */
     confirmCompletion() {
       const config = this.siteConfig.buttonDetection;
       if (!config || !config.getState) return;
 
       const button = document.querySelector(config.buttonSelector);
-      if (!button) return;
-
+      // ✨ v1.1.11: 按钮不存在时也要检查状态（getState(null) 返回 'running'）
+      // 之前 if (!button) return 会导致按钮在二次确认时恰好消失的边界场景漏检
       const stateAfter = config.getState(button);
 
       // 二次确认失败：按钮又变回运行/思考状态（说明只是瞬态闪动）
       if (stateAfter === 'running' || stateAfter === 'thinking') {
-        log('[按钮监控] ⏭️ 二次确认失败：按钮已变回 ' + stateAfter + '，刚才的 idle 是瞬态闪动');
+        log('[按钮监控] ⏭️ 二次确认失败：按钮状态为 ' + stateAfter + '，刚才的 idle 是瞬态闪动');
         this.diagnosticInfo.skippedConfirmFail++;
         // 重新记录运行开始时间
         this.buttonRunningStartTime = Date.now();
-        this.buttonLastState = stateAfter;
-        return;
-      }
-
-      // 二次确认时仍检测到思考指示器 → 思考阶段未结束
-      if (this.isThinkingNow()) {
-        log('[按钮监控] ⏭️ 二次确认失败：思考指示器仍在，思考阶段未结束');
-        this.diagnosticInfo.skippedThinking++;
         this.buttonLastState = stateAfter;
         return;
       }
@@ -1049,16 +1039,11 @@
       this.diagnosticInfo.textPolls++;
       this.diagnosticInfo.lastPollTime = Date.now();
 
-      // ✨ v1.1.9: 检测思考阶段 —— 如果页面仍显示思考指示器，
-      // 说明 AI 还在 reasoning，文本即使稳定也不应触发通知
-      // 此时重置防抖计时器，避免思考结束瞬间触发
-      if (this.isThinkingNow()) {
-        if (this.lastTextChangeTime !== 0) {
-          logThrottled('[轮询] 思考阶段（检测到思考指示器），重置防抖计时器');
-          this.lastTextChangeTime = Date.now(); // 重置，等思考结束才开始计时
-        }
-        return;
-      }
+      // ✨ v1.1.11: 移除 isThinkingNow() 检查
+      // z.ai 的 thinking-chain-container 在 AI 回复完成后仍保留在 DOM 中，
+      // 导致 isThinkingNow() 永远返回 true，文本轮询永远不发通知。
+      // 按钮检测（v1.1.10）已经是主检测路径，文本轮询只是兜底。
+      // 文本轮询自身的防抖机制（1.5s 文本稳定）+ 指纹去重足以避免误触发。
 
       const aiMessages = queryAll(this.siteConfig.selectors.aiMsg);
       let latestMsg = null;

@@ -4,6 +4,31 @@
 
 ## 更新日志
 
+### v1.1.11（修复思考指示器误阻断通知）
+
+**用户反馈**：F12 Console 日志显示 `[按钮监控] ⏭️ 检测到思考指示器仍在 DOM 中，思考阶段未结束，忽略按钮空闲信号`，然后 `状态: idle → idle` 重复 56 次，通知始终不发。
+
+**根本原因**：
+
+z.ai 的 `thinking-chain-container`（思考链容器）在 AI 回复完成后**仍然保留在 DOM 中**，作为可折叠的"Thought Process"面板供用户查看思考过程。
+
+v1.1.9 引入的 `isThinkingNow()` 用 `[class*="thinking"]` 选择器匹配，会一直匹配到 `thinking-chain-container`，导致：
+
+1. AI 完成 → 按钮重新出现且 disabled → 状态 `running → idle`
+2. 触发完成检查 → `isThinkingNow()` 返回 `true`（`thinking-chain-container` 还在）
+3. **跳过通知**，重置 `buttonRunningStartTime = 0`
+4. 之后按钮一直是 idle，`idle → idle` 无状态转换，56 次空转
+5. **通知永远发不出！**
+
+**修复**：
+
+1. **`checkButtonStateChange` 移除 `isThinkingNow()` 检查**：v1.1.10 已确认按钮"消失→重新出现且 disabled"是 z.ai 的可靠完成信号，不需要额外的思考指示器检查。
+2. **`confirmCompletion` 移除 `isThinkingNow()` 检查**：同理，二次确认只检查按钮状态。
+3. **`pollLatestAIText` 移除 `isThinkingNow()` 检查**：文本轮询的防抖机制（1.5s 文本稳定）+ 指纹去重足以避免误触发。
+4. **`confirmCompletion` 移除 `if (!button) return`**：按钮在二次确认时恰好消失的边界场景也需要处理（`getState(null)` 会返回 `'running'`）。
+
+**保留**：`isThinkingNow()` 方法本身保留（未来其他站点可能需要），`thinkingIndicators` 配置保留（不影响功能，只是不再在 z.ai 路径中使用）。
+
 ### v1.1.10（重大修正 —— 实测发现 z.ai 真实按钮机制，与之前假设完全不同）
 
 **用户反馈**："思考时就发了通知" + 提供了完整 F12 Console 日志。
