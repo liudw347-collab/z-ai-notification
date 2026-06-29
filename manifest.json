@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "AI Chat Notification",
-  "version": "1.1.8",
+  "version": "1.1.9",
   "description": "当 AI 对话回复完成时发送浏览器通知，让你即使切换到其他标签页也能及时知道回复已就绪。支持 Z.AI、ChatGPT、Claude、Gemini、Kimi、MiniMax 等平台。",
   "permissions": [
     "notifications",

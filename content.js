@@ -66,20 +66,17 @@
         // 发送按钮的选择器（按优先级，第一个找到的会用）
         // ✨ v1.1.8：增加多个回退选择器，应对 z.ai DOM 结构调整
         buttonSelector: '#send-message-button, button[type="submit"][aria-label*="send" i], button[aria-label*="发送"], button[data-testid*="send" i]',
-        // 判断按钮是否处于"AI 运行中"状态
-        // ✨ v1.1.8 重写：不再硬编码 SVG path 的 '13.3333' 字符串
-        //   改用更稳定的多信号判定：
-        //   1. aria-label / title 含 "停止" / "stop" → 运行中
-        //   2. aria-label / title 含 "发送" / "send" → 非运行中
-        //   3. data-state="loading" / data-loading="true" → 运行中
-        //   4. 含 stop 图标特征（rect 元素或 svg class 含 stop）→ 运行中
-        //   5. enabled 且无上述特征，按 class 颜色推断
-        isRunning: (btn) => {
-          if (!btn) return false;
+        // ✨ v1.1.9：判断按钮状态，返回三态值
+        //   - 'running'  : AI 正在生成回复（流式输出中）
+        //   - 'thinking' : AI 正在思考（reasoning 阶段，还未开始输出正文）
+        //   - 'idle'     : 空闲，未运行
+        // 思考阶段也视为"未完成"，避免思考结束瞬间误触发通知
+        getState: (btn) => {
+          if (!btn) return 'idle';
 
-          // 1. 显式禁用属性 → 不在运行
-          if (btn.disabled) return false;
-          if (btn.getAttribute('aria-disabled') === 'true') return false;
+          // 1. 显式禁用属性 → 空闲
+          if (btn.disabled) return 'idle';
+          if (btn.getAttribute('aria-disabled') === 'true') return 'idle';
 
           // 2. 收集所有可用于判定的文本信号
           const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
@@ -89,36 +86,38 @@
 
           // 3. aria-label/title 含停止语义 → 运行中（最可靠）
           if (/stop|pause|abort|cancel|停止|中断|取消/.test(signals)) {
-            return true;
+            return 'running';
           }
-          // 4. aria-label/title 含发送语义 → 非运行中
+          // 4. aria-label/title 含发送语义 → 空闲
           if (/send|submit|发送|提交/.test(signals)) {
-            return false;
+            return 'idle';
           }
 
           // 5. data-state / data-loading 等显式状态属性
           const dataState = (btn.getAttribute('data-state') || '').toLowerCase();
-          if (dataState === 'loading' || dataState === 'running') return true;
-          if (dataState === 'idle' || dataState === 'ready') return false;
-          if (btn.getAttribute('data-loading') === 'true') return true;
-          if (btn.getAttribute('data-streaming') === 'true') return true;
+          if (dataState === 'loading' || dataState === 'running') return 'running';
+          if (dataState === 'thinking' || dataState === 'reasoning') return 'thinking';
+          if (dataState === 'idle' || dataState === 'ready') return 'idle';
+          if (btn.getAttribute('data-loading') === 'true') return 'running';
+          if (btn.getAttribute('data-streaming') === 'true') return 'running';
+          if (btn.getAttribute('data-thinking') === 'true') return 'thinking';
 
-          // 6. SVG 图标特征：停止按钮通常是 rect 或两个竖线
+          // 6. SVG 图标特征
           const svg = btn.querySelector('svg');
           if (svg) {
             const svgClass = (svg.className && svg.className.baseVal !== undefined
               ? svg.className.baseVal
               : (svg.className || '')).toString().toLowerCase();
-            if (/stop|pause|abort|square/.test(svgClass)) return true;
-            if (/send|arrow|submit/.test(svgClass)) return false;
+            if (/stop|pause|abort|square/.test(svgClass)) return 'running';
+            if (/send|arrow|submit/.test(svgClass)) return 'idle';
 
             // 检查 SVG 内部：停止图标常见 rect 元素，箭头图标常见 path 元素
             const hasRect = !!svg.querySelector('rect');
             const hasPath = !!svg.querySelector('path');
             // 停止图标 = rect（实心方块）
-            if (hasRect && !hasPath) return true;
+            if (hasRect && !hasPath) return 'running';
             // 箭头图标 = path
-            if (hasPath && !hasRect) return false;
+            if (hasPath && !hasRect) return 'idle';
           }
 
           // 7. 兜底：通过 class 推断（最不可靠，但作为最后防线）
@@ -126,12 +125,24 @@
           // enabled 且有 "黑色背景" 类（z.ai 运行中常见样式）
           if (/bg-black|bg-neutral-50|bg-neutral-900/i.test(cls)) {
             // 保守判断为运行中（避免漏通知）
-            return true;
+            return 'running';
           }
 
-          return false;
+          return 'idle';
         }
       },
+      // ✨ v1.1.9：思考阶段识别选择器
+      // 这些选择器匹配 z.ai 等站点在 AI 思考时显示的 UI 元素
+      // 思考阶段不视为"回复完成"，避免在思考结束时误触发通知
+      thinkingIndicators: [
+        '#loading-message',
+        '[class*="thinking"]',
+        '[class*="reasoning"]',
+        '[class*=" contemplating"]',
+        '[data-state="thinking"]',
+        '[data-state="reasoning"]',
+        '[data-thinking="true"]'
+      ],
       selectors: {
         chatArea: [
           '#messages-container',
@@ -356,6 +367,8 @@
           contentFocused: pattern.contentFocused || false,
           contentSelectors: pattern.contentSelectors || [],
           buttonDetection: pattern.buttonDetection || null,
+          // ✨ v1.1.9：思考阶段指示器，用于文本轮询时识别"思考中"状态
+          thinkingIndicators: pattern.thinkingIndicators || [],
           selectors: pattern.selectors
         };
       }
@@ -546,6 +559,16 @@
       // ✨ v1.1.7: 按钮状态监控
       this.buttonObserver = null;
       this.buttonWasRunning = false;
+      // ✨ v1.1.9: 按钮三态值（'running' | 'thinking' | 'idle'），替代旧的 boolean
+      this.buttonLastState = 'idle';
+      // ✨ v1.1.9: 最小运行时长保护 —— 按钮进入运行/思考状态的时间戳
+      // 从运行到空闲必须超过 minRunTimeMs 才视为有效回复，避免瞬态抖动误触发
+      this.buttonRunningStartTime = 0;
+      this.minRunTimeMs = 800; // 0.8 秒，过滤极短的瞬态状态变化
+      // ✨ v1.1.9: 完成检测后延迟二次确认 —— 按钮变 idle 后等待 200ms 再检查一次
+      // 避免按钮在思考结束、开始流式输出之间的瞬间闪动误触发通知
+      this.buttonConfirmTimer = null;
+      this.buttonConfirmDelay = 200;
       this.diagnosticInfo = {
         initTime: Date.now(),
         mutationsReceived: 0,
@@ -555,6 +578,10 @@
         skippedVisible: 0,
         skippedDuplicate: 0,
         skippedStreaming: 0,
+        // ✨ v1.1.9：新增统计
+        skippedThinking: 0,
+        skippedTooShort: 0,
+        skippedConfirmFail: 0,
         lastPollTime: null,
         lastMutationTime: null,
       };
@@ -635,6 +662,13 @@
       this.snapshotInitialized = false; // ✨ 重置初始化标记
       // ✨ v1.1.7: 重置按钮状态
       this.buttonWasRunning = false;
+      // ✨ v1.1.9: 重置新的按钮状态字段
+      this.buttonLastState = 'idle';
+      this.buttonRunningStartTime = 0;
+      if (this.buttonConfirmTimer) {
+        clearTimeout(this.buttonConfirmTimer);
+        this.buttonConfirmTimer = null;
+      }
       if (this.buttonObserver) { this.buttonObserver.disconnect(); this.buttonObserver = null; }
       // ✨ v1.1.5: SPA 导航时不清空 notifiedFingerprints
       // 因为同一会话内不同 URL 可能仍然引用同一消息
@@ -766,6 +800,12 @@
 
     /**
      * 检查按钮状态变化，如果从"运行中"变为"空闲"，触发通知
+     *
+     * ✨ v1.1.9 重写：
+     *   - 用三态值（'running' | 'thinking' | 'idle'）替代 boolean
+     *   - thinking 视为"未完成"，思考阶段不会触发通知
+     *   - 增加最小运行时长保护（minRunTimeMs=800ms），过滤瞬态抖动
+     *   - 增加延迟二次确认（buttonConfirmDelay=200ms），避免按钮短暂闪动误触发
      */
     checkButtonStateChange() {
       // ✨ v1.1.8 修复：扩展重载后旧 content script 的按钮 observer 仍在运行，
@@ -781,58 +821,168 @@
       }
 
       const config = this.siteConfig.buttonDetection;
-      if (!config) return;
+      if (!config || !config.getState) return;
 
       const button = document.querySelector(config.buttonSelector);
       if (!button) return;
 
-      const isRunningNow = config.isRunning(button);
+      const stateNow = config.getState(button);
+      const stateBefore = this.buttonLastState;
 
-      log('[按钮监控] 状态检查: isRunning=' + isRunningNow +
-          ', wasRunning=' + this.buttonWasRunning +
-          ', disabled=' + button.disabled +
-          ', class=' + (button.className || '').substring(0, 50));
+      // 状态从运行/思考切换到另一个运行/思考状态（如 thinking→running）
+      // 不触发完成通知，但记录新的运行开始时间（如果是新进入运行）
+      const isRunningOrThinking = (s) => s === 'running' || s === 'thinking';
+      const wasRunningOrThinking = isRunningOrThinking(stateBefore);
+      const isRunningOrThinkingNow = isRunningOrThinking(stateNow);
 
-      // 关键转换：从"运行中"变为"非运行中" = AI 回复完成
-      if (this.buttonWasRunning && !isRunningNow) {
-        log('[按钮监控] ✅✅ 检测到 AI 回复完成（按钮状态变化）！');
+      log('[按钮监控] 状态: ' + stateBefore + ' → ' + stateNow +
+          ', 运行时长=' + (this.buttonRunningStartTime
+            ? ((Date.now() - this.buttonRunningStartTime) / 1000).toFixed(1) + 's'
+            : '-'));
 
-        // 获取最新 AI 消息内容用于通知预览
-        const aiMessages = queryAll(this.siteConfig.selectors.aiMsg);
-        let latestText = '';
-        let latestMsg = null;
-        if (aiMessages.length > 0) {
-          latestMsg = aiMessages[aiMessages.length - 1];
-          latestText = getCleanText(latestMsg);
+      // 进入运行/思考状态 → 记录开始时间
+      if (!wasRunningOrThinking && isRunningOrThinkingNow) {
+        this.buttonRunningStartTime = Date.now();
+        // 取消任何待处理的完成确认
+        if (this.buttonConfirmTimer) {
+          clearTimeout(this.buttonConfirmTimer);
+          this.buttonConfirmTimer = null;
         }
-
-        // 去重检查（与文本轮询共用 notifiedFingerprints）
-        const fingerprint = getElementFingerprint(latestMsg);
-        if (this.isAlreadyNotified(fingerprint)) {
-          log('[按钮监控] 该消息已通知过，跳过');
-          this.buttonWasRunning = isRunningNow;
-          return;
-        }
-
-        // 失焦检查
-        if (this.onlyWhenHidden && !isTabUnfocused()) {
-          log('[按钮监控] 标签页聚焦中，跳过通知（但记录指纹）');
-          this.markNotified(fingerprint);
-          this.buttonWasRunning = isRunningNow;
-          return;
-        }
-
-        // 发送通知
-        this.markNotified(fingerprint);
-        this.diagnosticInfo.notificationsSent++;
-        if (latestText.length > 0) {
-          this.sendNotification(latestText);
-        } else {
-          this.sendNotification('AI 已完成回复');
-        }
+        this.buttonLastState = stateNow;
+        return;
       }
 
-      this.buttonWasRunning = isRunningNow;
+      // 思考 → 运行（同属"未完成"状态）→ 仅更新状态
+      if (wasRunningOrThinking && isRunningOrThinkingNow) {
+        this.buttonLastState = stateNow;
+        return;
+      }
+
+      // 运行/思考 → 空闲 = AI 回复完成候选信号
+      if (wasRunningOrThinking && !isRunningOrThinkingNow) {
+        // ✨ 检查 1：最小运行时长保护
+        // 如果从运行到空闲的间隔小于 minRunTimeMs，视为瞬态抖动，忽略
+        const runDuration = this.buttonRunningStartTime
+          ? Date.now() - this.buttonRunningStartTime
+          : 0;
+        if (runDuration < this.minRunTimeMs) {
+          log('[按钮监控] ⏭️ 运行时长仅 ' + runDuration + 'ms (< ' + this.minRunTimeMs +
+              'ms)，视为瞬态抖动，忽略');
+          this.diagnosticInfo.skippedTooShort++;
+          this.buttonLastState = stateNow;
+          this.buttonRunningStartTime = 0;
+          return;
+        }
+
+        // ✨ 检查 2：是否仍在思考阶段（思考指示器还在 DOM 中）
+        // 即使按钮显示空闲，但页面仍有思考指示器，说明思考还没结束
+        if (this.isThinkingNow()) {
+          log('[按钮监控] ⏭️ 检测到思考指示器仍在 DOM 中，思考阶段未结束，忽略按钮空闲信号');
+          this.diagnosticInfo.skippedThinking++;
+          this.buttonLastState = stateNow;
+          this.buttonRunningStartTime = 0;
+          return;
+        }
+
+        // ✨ 检查 3：延迟二次确认
+        // 按钮 idle 后等 200ms 再查一次，避免思考结束、开始流式输出之间的瞬间闪动
+        if (this.buttonConfirmTimer) {
+          clearTimeout(this.buttonConfirmTimer);
+        }
+        log('[按钮监控] ⏸️ 按钮变 idle，等待 ' + this.buttonConfirmDelay +
+            'ms 二次确认（避免思考/输出阶段切换的瞬态闪动）');
+        this.buttonLastState = stateNow;
+        this.buttonRunningStartTime = 0;
+        this.buttonConfirmTimer = setTimeout(() => {
+          this.buttonConfirmTimer = null;
+          this.confirmCompletion();
+        }, this.buttonConfirmDelay);
+        return;
+      }
+
+      // idle → idle，无变化
+      this.buttonLastState = stateNow;
+    }
+
+    /**
+     * ✨ v1.1.9: 检测页面是否仍在思考阶段
+     * 通过 thinkingIndicators 选择器判断
+     */
+    isThinkingNow() {
+      const indicators = this.siteConfig.thinkingIndicators || [];
+      if (indicators.length === 0) return false;
+      for (const sel of indicators) {
+        try {
+          if (document.querySelector(sel)) return true;
+        } catch { /* skip */ }
+      }
+      return false;
+    }
+
+    /**
+     * ✨ v1.1.9: 二次确认完成 —— 按钮空闲 200ms 后再次检查
+     * 如果此时按钮仍为 idle 且思考指示器消失，才真正发通知
+     */
+    confirmCompletion() {
+      const config = this.siteConfig.buttonDetection;
+      if (!config || !config.getState) return;
+
+      const button = document.querySelector(config.buttonSelector);
+      if (!button) return;
+
+      const stateAfter = config.getState(button);
+
+      // 二次确认失败：按钮又变回运行/思考状态（说明只是瞬态闪动）
+      if (stateAfter === 'running' || stateAfter === 'thinking') {
+        log('[按钮监控] ⏭️ 二次确认失败：按钮已变回 ' + stateAfter + '，刚才的 idle 是瞬态闪动');
+        this.diagnosticInfo.skippedConfirmFail++;
+        // 重新记录运行开始时间
+        this.buttonRunningStartTime = Date.now();
+        this.buttonLastState = stateAfter;
+        return;
+      }
+
+      // 二次确认时仍检测到思考指示器 → 思考阶段未结束
+      if (this.isThinkingNow()) {
+        log('[按钮监控] ⏭️ 二次确认失败：思考指示器仍在，思考阶段未结束');
+        this.diagnosticInfo.skippedThinking++;
+        this.buttonLastState = stateAfter;
+        return;
+      }
+
+      log('[按钮监控] ✅✅ 二次确认通过，AI 回复完成！');
+
+      // 获取最新 AI 消息内容用于通知预览
+      const aiMessages = queryAll(this.siteConfig.selectors.aiMsg);
+      let latestText = '';
+      let latestMsg = null;
+      if (aiMessages.length > 0) {
+        latestMsg = aiMessages[aiMessages.length - 1];
+        latestText = getCleanText(latestMsg);
+      }
+
+      // 去重检查（与文本轮询共用 notifiedFingerprints）
+      const fingerprint = getElementFingerprint(latestMsg);
+      if (this.isAlreadyNotified(fingerprint)) {
+        log('[按钮监控] 该消息已通知过，跳过');
+        return;
+      }
+
+      // 失焦检查
+      if (this.onlyWhenHidden && !isTabUnfocused()) {
+        log('[按钮监控] 标签页聚焦中，跳过通知（但记录指纹）');
+        this.markNotified(fingerprint);
+        return;
+      }
+
+      // 发送通知
+      this.markNotified(fingerprint);
+      this.diagnosticInfo.notificationsSent++;
+      if (latestText.length > 0) {
+        this.sendNotification(latestText);
+      } else {
+        this.sendNotification('AI 已完成回复');
+      }
     }
 
     pollLatestAIText() {
@@ -849,6 +999,17 @@
 
       this.diagnosticInfo.textPolls++;
       this.diagnosticInfo.lastPollTime = Date.now();
+
+      // ✨ v1.1.9: 检测思考阶段 —— 如果页面仍显示思考指示器，
+      // 说明 AI 还在 reasoning，文本即使稳定也不应触发通知
+      // 此时重置防抖计时器，避免思考结束瞬间触发
+      if (this.isThinkingNow()) {
+        if (this.lastTextChangeTime !== 0) {
+          logThrottled('[轮询] 思考阶段（检测到思考指示器），重置防抖计时器');
+          this.lastTextChangeTime = Date.now(); // 重置，等思考结束才开始计时
+        }
+        return;
+      }
 
       const aiMessages = queryAll(this.siteConfig.selectors.aiMsg);
       let latestMsg = null;
@@ -1271,6 +1432,8 @@
       if (this.textPollingTimer) { clearInterval(this.textPollingTimer); this.textPollingTimer = null; }
       // ✨ v1.1.7: 清理按钮 observer
       if (this.buttonObserver) { this.buttonObserver.disconnect(); this.buttonObserver = null; }
+      // ✨ v1.1.9: 清理二次确认计时器
+      if (this.buttonConfirmTimer) { clearTimeout(this.buttonConfirmTimer); this.buttonConfirmTimer = null; }
       this.active = false;
       log('监控器已销毁');
     }
