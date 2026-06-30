@@ -340,7 +340,8 @@
       this.retryDelay = 2000;
       this.initCalled = false;
       this.debounceTime = 1500;
-      this.onlyWhenHidden = true; // ✨ v1.1.4: 语义改为"未聚焦时不发，失去焦点时发"
+      // ✨ v1.2.2: 上次发送通知的时间戳，用于最小通知间隔保护（1 秒）
+      this.lastNotificationTime = 0;
       // ✨ v1.1.5: 已通知过的消息指纹集合，用于去重
       // 防止 Svelte/React UI 重渲染导致 textContent 细微变化触发重复通知
       this.notifiedFingerprints = new Set();
@@ -1150,6 +1151,16 @@
     }
 
     sendNotification(text) {
+      // ✨ v1.2.2: 最小通知间隔保护（1 秒）
+      // 避免按钮瞬态抖动或多个检测路径同时触发导致短时间内重复通知
+      // 距上次通知不足 1 秒时直接跳过
+      const now = Date.now();
+      if (this.lastNotificationTime && (now - this.lastNotificationTime) < 1000) {
+        log('[通知] 距上次通知不足 1 秒，跳过本次通知');
+        return;
+      }
+      this.lastNotificationTime = now;
+
       // ✨ v1.1.6: 检查扩展上下文是否有效，避免 'Extension context invalidated' 错误
       if (!isExtensionContextValid()) {
         warn('扩展上下文已失效，无法发送通知。请刷新页面。');
