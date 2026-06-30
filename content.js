@@ -719,19 +719,15 @@
         // v1.1.10 已确认按钮"消失→重新出现且 disabled"是 z.ai 的可靠完成信号，
         // 不需要额外的思考指示器检查。
 
-        // ✨ 检查 2：延迟二次确认
-        // 按钮 idle 后等 200ms 再查一次，避免思考结束、开始流式输出之间的瞬间闪动
-        if (this.buttonConfirmTimer) {
-          clearTimeout(this.buttonConfirmTimer);
-        }
-        log('[按钮监控] ⏸️ 按钮变 idle，等待 ' + this.buttonConfirmDelay +
-            'ms 二次确认（避免思考/输出阶段切换的瞬态闪动）');
+        // ✨ v1.2.3 修正：移除 setTimeout 二次确认
+        // 之前用 setTimeout(200ms) 做二次确认，但后台标签页的 setTimeout 会被
+        // Chrome 节流到几秒甚至更久才执行，导致"需要点回标签页才收到通知"。
+        // 现在直接调用 confirmCompletion，由它内部检查按钮状态是否仍为 idle。
+        // 如果 confirmCompletion 发现按钮又变回 running（瞬态闪动），会自动跳过。
+        log('[按钮监控] ✅ 检测到按钮变 idle，立即确认完成');
         this.buttonLastState = stateNow;
         this.buttonRunningStartTime = 0;
-        this.buttonConfirmTimer = setTimeout(() => {
-          this.buttonConfirmTimer = null;
-          this.confirmCompletion();
-        }, this.buttonConfirmDelay);
+        this.confirmCompletion();
         return;
       }
 

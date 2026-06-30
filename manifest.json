@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "AI Chat Notification",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "description": "当 Z.AI 对话回复完成时发送浏览器通知，让你即使切换到其他标签页也能及时知道回复已就绪。",
   "permissions": [
     "notifications",
