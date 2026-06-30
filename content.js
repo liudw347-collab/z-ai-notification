@@ -1147,12 +1147,12 @@
     }
 
     sendNotification(text) {
-      // ✨ v1.2.2: 最小通知间隔保护（1 秒）
+      // ✨ v1.2.4: 最小通知间隔保护（2 秒）
       // 避免按钮瞬态抖动或多个检测路径同时触发导致短时间内重复通知
-      // 距上次通知不足 1 秒时直接跳过
+      // 距上次通知不足 2 秒时直接跳过
       const now = Date.now();
-      if (this.lastNotificationTime && (now - this.lastNotificationTime) < 1000) {
-        log('[通知] 距上次通知不足 1 秒，跳过本次通知');
+      if (this.lastNotificationTime && (now - this.lastNotificationTime) < 2000) {
+        log('[通知] 距上次通知不足 2 秒，跳过本次通知');
         return;
       }
       this.lastNotificationTime = now;
